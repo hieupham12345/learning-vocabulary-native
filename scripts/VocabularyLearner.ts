@@ -330,6 +330,39 @@ export class VocabularyLearner {
     }
   }
 
+  /**
+   * Batch tokenize tất cả sentences trong learning data một lần.
+   * Gọi sau khi learnWord() trả về data để preprocess tất cả examples cùng lúc.
+   * 
+   * @param learningData - Data trả về từ learnWord()
+   * @param language - Ngôn ngữ input
+   * @returns Learning data với tokens được thêm vào mỗi example
+   */
+  public async preprocessExampleTokens(learningData: any, language: string): Promise<any> {
+    if (!learningData || !learningData.examples) return learningData;
+
+    const difficultiesMap: Record<string, any> = (["easy", "medium", "hard", "super_hard"] as const).reduce((acc, diff) => {
+      if (learningData.examples[diff]) {
+        acc[diff] = learningData.examples[diff];
+      }
+      return acc;
+    }, {} as Record<string, any>);
+
+    // Lặp qua tất cả độ khó và tokenize toàn bộ examples
+    for (const [difficulty, examples] of Object.entries(difficultiesMap)) {
+      if (Array.isArray(examples)) {
+        for (const example of examples) {
+          if (example.sentence) {
+            // Tokenize từng câu nhưng batch gọi (không await liên tục)
+            example.tokens = await this.tokenizeSentence(example.sentence, language);
+          }
+        }
+      }
+    }
+
+    return learningData;
+  }
+
   public async translateText(text: string, inputLanguage: string, outputLanguage: string): Promise<string> {
     const prompt = `
       You are an expert lexicographer translating ${inputLanguage} to ${outputLanguage}.
