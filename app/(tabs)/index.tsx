@@ -9,7 +9,7 @@
  * - [FIX] tokenizeSentence: gọi API sau khi load example, cache vào ExampleItem.tokens
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -280,6 +280,7 @@ export default function VocabularyLearnerUI() {
   const [quizWordCount, setQuizWordCount]         = useState(5);
   const [quizQuestionCount, setQuizQuestionCount] = useState(5);
 
+
   // ─────────────────────────────────────────────
   // INIT
   // ─────────────────────────────────────────────
@@ -353,32 +354,62 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   // TOKENIZATION — lazy, triggered by exampleIndex
   // ─────────────────────────────────────────────
-  useEffect(() => {
-    const example = allExamples[exampleIndex];
-    if (!example) return;
-    if (example.tokens && example.tokens.length > 0) return;
-    if (tokenizeStatus[exampleIndex] === "loading") return;
+  // ─────────────────────────────────────────────
+  // TOKENIZATION — background preload toàn bộ sau khi load examples
+  // ─────────────────────────────────────────────
 
-    const run = async () => {
-      setTokenizeStatus((prev) => ({ ...prev, [exampleIndex]: "loading" }));
+// Ref để cancel background process khi load word mới
+const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+
+// Trigger background tokenization khi allExamples thay đổi (load word mới)
+useEffect(() => {
+  if (allExamples.length === 0 || !currentData) return;
+
+  // Cancel batch cũ nếu đang chạy
+  tokenizeAbortRef.current = { cancelled: false };
+  const abortToken = tokenizeAbortRef.current;
+
+  const runBatch = async () => {
+    for (let i = 0; i < allExamples.length; i++) {
+      if (abortToken.cancelled) return;
+
+      const example = allExamples[i];
+      if (example.tokens && example.tokens.length > 0) continue;
+
+      setTokenizeStatus((prev) => {
+        if (prev[i] === "loading" || prev[i] === "done") return prev;
+        return { ...prev, [i]: "loading" };
+      });
+
       try {
         const tokens = await learner.tokenizeSentence(
           example.sentence,
-          currentData?.language.input ?? inputLang
+          currentData.language.input ?? inputLang
         );
+        if (abortToken.cancelled) return;
         setAllExamples((prev) => {
           const copy = [...prev];
-          copy[exampleIndex] = { ...copy[exampleIndex], tokens };
+          if (!copy[i].tokens || copy[i].tokens!.length === 0) {
+            copy[i] = { ...copy[i], tokens };
+          }
           return copy;
         });
-        setTokenizeStatus((prev) => ({ ...prev, [exampleIndex]: "done" }));
+        setTokenizeStatus((prev) => ({ ...prev, [i]: "done" }));
       } catch {
-        setTokenizeStatus((prev) => ({ ...prev, [exampleIndex]: "error" }));
+        if (!abortToken.cancelled) {
+          setTokenizeStatus((prev) => ({ ...prev, [i]: "error" }));
+        }
       }
-    };
-    run();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exampleIndex, allExamples.length]);
+    }
+  };
+
+  runBatch();
+
+  return () => {
+    abortToken.cancelled = true;
+  };
+// eslint-disable-next-line react-hooks/exhaustive-deps
+}, [allExamples.length, currentData?.word]);
 
   // ─────────────────────────────────────────────
   // HELPERS
