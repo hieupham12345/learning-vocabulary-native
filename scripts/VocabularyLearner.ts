@@ -3,11 +3,16 @@ import Constants from "expo-constants";
 import { callChatbot } from "./chatbotService";
 import { OPENAI_API_KEY } from "./config";
 
-// Trong React Native, biến môi trường nên được cấu hình qua file .env + Expo config extra.
+///////////////////////////////////////////////////////////////////////////////////
 const GPT_API_KEY = OPENAI_API_KEY || process.env.OPENAI_API_KEY ||
   Constants.expoConfig?.extra?.OPENAI_API_KEY ||
   (Constants.manifest as any)?.extra?.OPENAI_API_KEY ||
   "";
+
+const AGENT = "chatgpt"; 
+const MODEL = "gpt-5.4-mini"; 
+///////////////////////////////////////////////////////////////////////////////////
+
 
 // ── Google Cloud TTS language code mapping ──
 // Ánh xạ từ tên ngôn ngữ app → BCP-47 language code cho Google TTS
@@ -33,10 +38,10 @@ export class VocabularyLearner {
   private modelType: string;
   private modelName: string;
 
-  constructor(apiKey: string = GPT_API_KEY) {
+  constructor(apiKey: string = GPT_API_KEY, modelType: string = AGENT, modelName: string = MODEL) {
     this.apiKey = apiKey;
-    this.modelType = "chatgpt"; // Mặc định theo logic cũ
-    this.modelName = "gpt-5.4-mini"; // Đã cập nhật model name tiêu chuẩn hơn (gpt-4o-mini thay vì gpt-5.4-mini)
+    this.modelType = modelType;
+    this.modelName = modelName;
   }
 
   // ─────────────────────────────────────────────

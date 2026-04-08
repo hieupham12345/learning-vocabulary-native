@@ -19,6 +19,7 @@ const MAPPING = {
   'chevron.left.forwardslash.chevron.right': 'code',
   'chevron.right': 'chevron-right',
   'list.bullet': 'list',
+  'book.fill': 'menu-book', // thêm icon sách cho Lesson
 } as IconMapping;
 
 /**

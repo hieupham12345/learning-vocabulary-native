@@ -6,6 +6,10 @@
  * CHANGES v4:
  * - [FIX] Translation popup: tap ngoài khung → tự đóng (Pressable dismiss)
  * - [FIX] TTS volume: set explicit volume: 1.0 (max của expo-speech)
+ *
+ * CHANGES v5:
+ * - [FEATURE] Quiz: lọc history theo inputLang hiện tại, tránh mix nhiều ngôn ngữ
+ * - [UI] Quiz Setup: hiển thị ngôn ngữ đang filter + cảnh báo nếu không đủ từ
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -29,6 +33,8 @@ import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from 'expo-router';
 import { localDict } from "@/scripts/LocalDictionary";
+import { database } from "@/scripts/VocabularyDB";
+
 // ─────────────────────────────────────────────
 // TTS LANGUAGE MAP
 // ─────────────────────────────────────────────
@@ -146,6 +152,12 @@ const CURRENT_REVIEW_KEY = "@current_quiz_review";
 const CURRENT_RETAKE_KEY = "@current_quiz_retake";
 const SPEED_KEY          = "@tts_speed";
 
+const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
+const LAST_LEARNED_KEY        = "@last_learned_word";   // cache từ cuối
+
+const LESSON_NAVIGATION_KEY = "@lesson_navigation_context";
+
+
 const SPEED_MIN  = 1.0;
 const SPEED_MAX  = 2.0;
 const SPEED_STEP = 0.1;
@@ -237,11 +249,11 @@ export default function VocabularyLearnerUI() {
   // ── Input ──
   const [word, setWord]           = useState("");
   const [inputLang, setInputLang] = useState("Chinese");
-  const [outputLang, setOutputLang] = useState("English");
-  const [genMode, setGenMode]     = useState<"easy" | "hard">("hard");
+  const [outputLang, setOutputLang] = useState("Vietnamese");
+  const [genMode, setGenMode]     = useState<"easy" | "hard">("easy");
 
   // ── TTS Speed ──
-  const [ttsSpeed, setTtsSpeed] = useState(1.0);
+  const [ttsSpeed, setTtsSpeed] = useState(1.5);
 
   // ── Learning ──
   const [currentData, setCurrentData]               = useState<VocabData | null>(null);
@@ -271,6 +283,16 @@ export default function VocabularyLearnerUI() {
   const [quizWordCount, setQuizWordCount]         = useState(5);
   const [quizQuestionCount, setQuizQuestionCount] = useState(5);
 
+  const [lessonNav, setLessonNav] = useState<{
+    words: Array<{ id: number; word: string; language: string; level: string }>;
+    currentIndex: number;
+    language: string;
+    level: string;
+  } | null>(null);
+
+  // [v5] historyCount giờ chỉ đếm từ đã lọc theo ngôn ngữ hiện tại
+  const [historyCount, setHistoryCount] = useState(0);
+
   // ─────────────────────────────────────────────
   // INIT
   // ─────────────────────────────────────────────
@@ -287,11 +309,18 @@ export default function VocabularyLearnerUI() {
     useCallback(() => {
       const loadPendingActions = async () => {
         try {
-          const [wordData, reviewData, retakeData] = await Promise.all([
+          const [wordData, reviewData, retakeData, pendingWordRaw, lastLearnedRaw, lessonNavRaw] = await Promise.all([
             AsyncStorage.getItem(CURRENT_WORD_KEY),
             AsyncStorage.getItem(CURRENT_REVIEW_KEY),
             AsyncStorage.getItem(CURRENT_RETAKE_KEY),
+            AsyncStorage.getItem(PENDING_LESSON_WORD_KEY),
+            AsyncStorage.getItem(LAST_LEARNED_KEY),
+            AsyncStorage.getItem(LESSON_NAVIGATION_KEY),
           ]);
+
+          if (lessonNavRaw) {
+            setLessonNav(JSON.parse(lessonNavRaw));
+          }
 
           if (reviewData) {
             const entry: QuizHistoryEntry = JSON.parse(reviewData);
@@ -304,6 +333,74 @@ export default function VocabularyLearnerUI() {
             const entry: QuizHistoryEntry = JSON.parse(retakeData);
             setQuizWindowData({ data: entry.quiz_data, words: entry.words, mode: "take" });
             await AsyncStorage.removeItem(CURRENT_RETAKE_KEY);
+            return;
+          }
+
+          if (pendingWordRaw) {
+            await AsyncStorage.removeItem(PENDING_LESSON_WORD_KEY);
+            const pending = JSON.parse(pendingWordRaw) as { 
+              word: string; id: number; language: string; level: string;
+            };
+            setWord(pending.word);
+            setInputLang(pending.language);
+
+            const raw = await AsyncStorage.getItem(HISTORY_KEY);
+            const arr: HistoryEntry[] = raw ? JSON.parse(raw) : [];
+            const cached = arr.find(
+              e => e.word === pending.word && e.input_lang === pending.language
+            );
+
+            if (cached) {
+              const examples = prepareExamples(cached.data);
+              setCurrentData(cached.data);
+              setAllExamples(examples);
+              setExampleIndex(0);
+              setTokenizeStatus({});
+              setRomanizationVisible(false);
+              setPracticeSuccess(0);
+              setOutputLang(cached.output_lang);
+              setStatus(`⚡ Loaded '${pending.word}' from history cache`);
+
+              if (pending.id) {
+                await database.initDB();
+                await database.setLearned(pending.id, true);
+              }
+            } else {
+              setStatus(`🔄 Auto-learning '${pending.word}' from Lessons...`);
+              setLoading(true);
+              try {
+                const data = await learner.learnWord(pending.word, pending.language, outputLang, genMode);
+                if (!data.error) {
+                  const examples = prepareExamples(data);
+                  setCurrentData(data);
+                  setAllExamples(examples);
+                  setExampleIndex(0);
+                  setTokenizeStatus({});
+                  setRomanizationVisible(false);
+                  setPracticeSuccess(0);
+                  setStatus(`✅ Ready to learn '${pending.word}'!`);
+
+                  if (pending.id) {
+                    await database.initDB();
+                    await database.setLearned(pending.id, true);
+                  }
+
+                  const entry: HistoryEntry = {
+                    word: pending.word, input_lang: pending.language, output_lang: outputLang,
+                    timestamp: new Date().toISOString(), data,
+                  };
+                  await AsyncStorage.setItem(
+                    HISTORY_KEY, 
+                    JSON.stringify([entry, ...arr].slice(0, 50))
+                  );
+                  await AsyncStorage.setItem(LAST_LEARNED_KEY, JSON.stringify(entry));
+                }
+              } catch (e: any) {
+                setStatus("❌ Error loading word from Lessons.");
+              } finally {
+                setLoading(false);
+              }
+            }
             return;
           }
 
@@ -322,6 +419,22 @@ export default function VocabularyLearnerUI() {
             setStatus(`Loaded '${entry.word}' from history`);
             await AsyncStorage.removeItem(CURRENT_WORD_KEY);
           }
+
+          if (!wordData && !reviewData && !retakeData && lastLearnedRaw && !currentData) {
+            const entry: HistoryEntry = JSON.parse(lastLearnedRaw);
+            const examples = prepareExamples(entry.data);
+            setCurrentData(entry.data);
+            setAllExamples(examples);
+            setExampleIndex(0);
+            setTokenizeStatus({});
+            setRomanizationVisible(false);
+            setPracticeSuccess(0);
+            setWord(entry.word);
+            setInputLang(entry.input_lang);
+            setOutputLang(entry.output_lang);
+            setStatus(`📂 Restored '${entry.word}' from last session`);
+          }
+
         } catch (e) {
           console.error("Error loading pending history actions:", e);
         }
@@ -331,6 +444,8 @@ export default function VocabularyLearnerUI() {
     }, [])
   );
 
+
+  
   const handleSpeedChange = useCallback(async (v: number) => {
     setTtsSpeed(v);
     await AsyncStorage.setItem(SPEED_KEY, String(v));
@@ -465,12 +580,84 @@ export default function VocabularyLearnerUI() {
       const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
       const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
       const updated = [entry, ...historyArray].slice(0, 50);
+
       await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(LAST_LEARNED_KEY, JSON.stringify(entry));
     } catch (e: any) {
       Alert.alert("Error", e.message);
       setStatus("Error occurred.");
     } finally { setLoading(false); }
   };
+
+
+  const navigateLesson = useCallback(async (direction: "prev" | "next") => {
+    if (!lessonNav) return;
+    const { words, currentIndex, language, level } = lessonNav;
+
+    const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
+    if (nextIndex < 0 || nextIndex >= words.length) return;
+
+    const target = words[nextIndex];
+    const newNav = { ...lessonNav, currentIndex: nextIndex };
+    setLessonNav(newNav);
+    await AsyncStorage.setItem(LESSON_NAVIGATION_KEY, JSON.stringify(newNav));
+
+    setWord(target.word);
+    setInputLang(language);
+
+    // Check history
+    const raw = await AsyncStorage.getItem(HISTORY_KEY);
+    const arr: HistoryEntry[] = raw ? JSON.parse(raw) : [];
+    const cached = arr.find(e => e.word === target.word && e.input_lang === language);
+
+    if (cached) {
+      const examples = prepareExamples(cached.data);
+      setCurrentData(cached.data);
+      setAllExamples(examples);
+      setExampleIndex(0);
+      setTokenizeStatus({});
+      setRomanizationVisible(false);
+      setPracticeSuccess(0);
+      setOutputLang(cached.output_lang);
+      setStatus(`⚡ [${level}] ${nextIndex + 1}/${words.length} — from cache`);
+
+      await database.initDB();
+      if (target.id) await database.setLearned(target.id, true);
+    } else {
+      setLoading(true);
+      setStatus(`🔄 [${level}] ${nextIndex + 1}/${words.length} — loading '${target.word}'...`);
+      try {
+        const data = await learner.learnWord(target.word, language, outputLang, genMode);
+        if (!data.error) {
+          const examples = prepareExamples(data);
+          setCurrentData(data);
+          setAllExamples(examples);
+          setExampleIndex(0);
+          setTokenizeStatus({});
+          setRomanizationVisible(false);
+          setPracticeSuccess(0);
+          setStatus(`✅ [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
+
+          await database.initDB();
+          if (target.id) await database.setLearned(target.id, true);
+
+          const entry: HistoryEntry = {
+            word: target.word, input_lang: language, output_lang: outputLang,
+            timestamp: new Date().toISOString(), data,
+          };
+          await AsyncStorage.setItem(
+            HISTORY_KEY,
+            JSON.stringify([entry, ...arr].slice(0, 50))
+          );
+          await AsyncStorage.setItem(LAST_LEARNED_KEY, JSON.stringify(entry));
+        }
+      } catch {
+        setStatus("❌ Error loading word.");
+      } finally {
+        setLoading(false);
+      }
+    }
+  }, [lessonNav, outputLang, genMode]);
 
   // ─────────────────────────────────────────────
   // TRANSLATION POPUP
@@ -478,52 +665,85 @@ export default function VocabularyLearnerUI() {
   const currentExample = allExamples[exampleIndex] ?? null;
 
   const handleTokenPress = async (token: string) => {
-  speakText(token, inputLang, ttsSpeed);
+    speakText(token, inputLang, ttsSpeed);
 
-  setTranslationPopup({ text: token, translation: "⏳ Translating..." });
-  
-  try {
-    // Đưa hàm gọi API (learner.translateText) thành fallback closure
-    const result = await localDict.translateToken(
-      token, 
-      inputLang, 
-      outputLang, 
-      () => learner.translateText(token, inputLang, outputLang) // Fallback L3
-    );
-
-    setTranslationPopup({ text: token, translation: result });
+    setTranslationPopup({ text: token, translation: "⏳ Translating..." });
     
-  } catch (err) {
-    setTranslationPopup({ text: token, translation: "❌ Translation failed." });
-  }
-};
+    try {
+      const result = await localDict.translateToken(
+        token, 
+        inputLang, 
+        outputLang, 
+        () => learner.translateText(token, inputLang, outputLang)
+      );
 
-  // Thêm useEffect này để reset popup khi đổi ví dụ hoặc đổi từ
+      setTranslationPopup({ text: token, translation: result });
+      
+    } catch (err) {
+      setTranslationPopup({ text: token, translation: "❌ Translation failed." });
+    }
+  };
+
   useEffect(() => {
     setTranslationPopup(null);
   }, [exampleIndex, currentData?.word]);
 
   // ─────────────────────────────────────────────
-  // QUIZ
+  // QUIZ — [v5] lọc theo ngôn ngữ hiện tại
   // ─────────────────────────────────────────────
   const handleGenerateQuiz = async () => {
     const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
-    const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
-    if (historyArray.length === 0) { Alert.alert("Empty History", "Learn some words first!"); return; }
+    const historyArray: HistoryEntry[] = currentHistory ? JSON.parse(currentHistory) : [];
+
+    if (historyArray.length === 0) {
+      Alert.alert("Empty History", "Learn some words first!");
+      return;
+    }
+
+    // [v5] Lọc theo ngôn ngữ của từ đang học hiện tại
+    // Ưu tiên dùng currentData.language.input nếu có (chính xác hơn),
+    // fallback về inputLang state (ngôn ngữ đang chọn ở picker).
+    const quizLang = currentData?.language?.input ?? inputLang;
+    const filteredByLang = historyArray.filter(e => e.input_lang === quizLang);
+
+    if (filteredByLang.length === 0) {
+      Alert.alert(
+        "No Words Found",
+        `You haven't learned any ${quizLang} words yet.\n\nLearn at least 1 ${quizLang} word before generating a quiz.`
+      );
+      return;
+    }
+
+    // Cập nhật state với số từ đã lọc theo ngôn ngữ
+    setHistoryCount(filteredByLang.length);
+    setQuizWordCount(Math.min(5, filteredByLang.length));
     setQuizSetupVisible(true);
   };
 
   const startQuizGeneration = async () => {
     setQuizSetupVisible(false);
     const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
-    const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
-    if (historyArray.length === 0) { Alert.alert("Empty History", "Learn some words first!"); return; }
-    
-    const words = historyArray.slice(0, quizWordCount).map((e: any) => e.word);
+    const historyArray: HistoryEntry[] = currentHistory ? JSON.parse(currentHistory) : [];
+
+    if (historyArray.length === 0) {
+      Alert.alert("Empty History", "Learn some words first!");
+      return;
+    }
+
+    // [v5] Lọc lại theo ngôn ngữ khi thực sự gen quiz
+    const quizLang = currentData?.language?.input ?? inputLang;
+    const filteredByLang = historyArray.filter(e => e.input_lang === quizLang);
+
+    if (filteredByLang.length === 0) {
+      Alert.alert("No Words Found", `No ${quizLang} words in history.`);
+      return;
+    }
+
+    const words = filteredByLang.slice(0, quizWordCount).map((e) => e.word);
     setQuizLoading(true);
-    setStatus(`🔄 Generating ${quizQuestionCount}-question quiz...`);
+    setStatus(`🔄 Generating ${quizQuestionCount}-question ${quizLang} quiz...`);
     try {
-      const data = await learner.generateQuiz(words, inputLang, outputLang, quizQuestionCount, genMode);
+      const data = await learner.generateQuiz(words, quizLang, outputLang, quizQuestionCount, genMode);
       if (data.error) { Alert.alert("Error", data.error); return; }
       setQuizWindowData({ data, words, mode: "take" });
     } catch (e: any) { Alert.alert("Error", e.message); }
@@ -607,7 +827,6 @@ export default function VocabularyLearnerUI() {
         style={styles.scroll} 
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
-        // 2. THÊM DÒNG NÀY: Chạm bất cứ đâu trên màn hình sẽ đóng pop up
         onTouchStart={() => {
           if (translationPopup) setTranslationPopup(null);
         }}
@@ -619,13 +838,44 @@ export default function VocabularyLearnerUI() {
 
         {/* INPUT CARD */}
         <View style={styles.card}>
-          <TextInput
-            style={styles.wordInput}
-            placeholder="Enter a word..."
-            placeholderTextColor="#666"
-            value={word}
-            onChangeText={setWord}
-          />
+          <View style={styles.wordInputRow}>
+            <TouchableOpacity
+              style={[styles.lessonNavArrow, (!lessonNav || lessonNav.currentIndex <= 0) && styles.btnDisabled]}
+              onPress={() => navigateLesson("prev")}
+              disabled={!lessonNav || lessonNav.currentIndex <= 0}
+            >
+              <Text style={styles.lessonNavArrowText}>◀</Text>
+            </TouchableOpacity>
+
+            <View style={{ flex: 1 }}>
+              <TextInput
+                style={styles.wordInput}
+                placeholder="Enter a word..."
+                placeholderTextColor="#666"
+                value={word}
+                onChangeText={(text) => {
+                  setWord(text);
+                  if (lessonNav && text !== lessonNav.words[lessonNav.currentIndex]?.word) {
+                    setLessonNav(null);
+                    AsyncStorage.removeItem(LESSON_NAVIGATION_KEY);
+                  }
+                }}
+              />
+            {lessonNav && (
+                <Text style={styles.lessonNavHint}>
+                  📚 {lessonNav.level} — {lessonNav.currentIndex + 1}/{lessonNav.words.length}
+                </Text>
+              )}             
+            </View>
+
+          <TouchableOpacity
+            style={[styles.lessonNavArrow, (!lessonNav || lessonNav.currentIndex >= lessonNav.words.length - 1) && styles.btnDisabled]}
+            onPress={() => navigateLesson("next")}
+            disabled={!lessonNav || lessonNav.currentIndex >= lessonNav.words.length - 1}
+          >
+            <Text style={styles.lessonNavArrowText}>▶</Text>
+          </TouchableOpacity>
+        </View>
           <View style={styles.langRow}>
             <View style={styles.langBlock}>
               <Text style={styles.langLabel}>From</Text>
@@ -697,9 +947,6 @@ export default function VocabularyLearnerUI() {
                 {translationPopup && (
                   <View
                     style={[styles.translationPopup, { maxHeight: 250 }]} 
-                    
-                    // 3. TẤM KHIÊN VÀNG: Bất cứ cú chạm hay vuốt nào bên trong Pop up 
-                    // sẽ bị chặn lại tại đây, không truyền lên ScrollView tổng ở Bước 2.
                     onTouchStart={(e) => e.stopPropagation()} 
                   >
                     <View style={styles.translationPopupHeader}>
@@ -707,7 +954,6 @@ export default function VocabularyLearnerUI() {
                       <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
                     </View>
 
-                    {/* ScrollView giờ đây sẽ cuộn cực kỳ mượt mà vì không bị Pressable cha cản trở */}
                     <ScrollView 
                       nestedScrollEnabled={true} 
                       style={{ marginVertical: 8 }}
@@ -730,7 +976,6 @@ export default function VocabularyLearnerUI() {
               style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]}
               onPress={() => { 
                 setExampleIndex((i) => Math.max(0, i - 1)); 
-                // setRomanizationVisible(false); // <-- ĐÃ XÓA DÒNG NÀY ĐỂ GIỮ TRẠNG THÁI
               }}
               disabled={exampleIndex === 0}
             >
@@ -743,7 +988,6 @@ export default function VocabularyLearnerUI() {
               style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]}
               onPress={() => { 
                 setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1)); 
-                // setRomanizationVisible(false); // <-- ĐÃ XÓA DÒNG NÀY ĐỂ GIỮ TRẠNG THÁI
               }}
               disabled={exampleIndex >= allExamples.length - 1}
             >
@@ -796,21 +1040,40 @@ export default function VocabularyLearnerUI() {
         />
       )}
 
-      {/* Quiz Setup */}
+      {/* Quiz Setup — [v5] hiển thị ngôn ngữ đang filter */}
       <Modal visible={quizSetupVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.quizSetupBox}>
             <Text style={styles.quizSetupTitle}>⚙️ Quiz Setup</Text>
-            <Text style={styles.setupLabel}>Recent words to test: {quizWordCount}</Text>
+
+            {/* [v5] Badge ngôn ngữ đang được filter */}
+            <View style={styles.quizLangBadge}>
+              <Text style={styles.quizLangBadgeText}>
+                🌐 Language: {currentData?.language?.input ?? inputLang}
+              </Text>
+            </View>
+
+            <Text style={styles.setupLabel}>
+              Recent words to test: {quizWordCount} / {historyCount}
+            </Text>
             <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}>
+              <TouchableOpacity 
+                style={styles.stepperBtn} 
+                onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}
+              >
                 <Text style={styles.stepperText}>−</Text>
               </TouchableOpacity>
+              
               <Text style={styles.stepperValue}>{quizWordCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.min(history.length, n + 1))}>
+              
+              <TouchableOpacity 
+                style={styles.stepperBtn} 
+                onPress={() => setQuizWordCount((n) => Math.min(historyCount, n + 1))}
+              >
                 <Text style={styles.stepperText}>+</Text>
               </TouchableOpacity>
             </View>
+            
             <Text style={styles.setupLabel}>Number of questions: {quizQuestionCount}</Text>
             <View style={styles.stepperRow}>
               <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}>
@@ -1188,10 +1451,7 @@ const styles = StyleSheet.create({
     shadowColor: "#000", shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
   },
-  wordInput: {
-    backgroundColor: "#0f3460", color: "#fff", borderRadius: 10,
-    padding: 14, fontSize: 18, marginBottom: 14, borderWidth: 1, borderColor: "#1a4a7a",
-  },
+
   langRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
   langBlock: { flex: 1 },
   langLabel: { color: "#aaa", fontSize: 12, marginBottom: 4 },
@@ -1295,7 +1555,23 @@ const styles = StyleSheet.create({
   typingSuccessBox: { backgroundColor: "#223d1f", padding: 12, borderRadius: 10, marginTop: 12, marginBottom: 16 },
   typingSuccessText: { color: "#2ECC71", fontSize: 16, textAlign: "center" },
   quizSetupBox: { backgroundColor: "#16213e", borderRadius: 20, padding: 24, margin: 24, alignSelf: "center", width: width - 48 },
-  quizSetupTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold", marginBottom: 20, textAlign: "center" },
+  quizSetupTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold", marginBottom: 12, textAlign: "center" },
+  // [v5] Badge ngôn ngữ trong Quiz Setup
+  quizLangBadge: {
+    backgroundColor: "#0d2a1a",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#2CC985",
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    alignSelf: "center",
+    marginBottom: 14,
+  },
+  quizLangBadgeText: {
+    color: "#2CC985",
+    fontSize: 13,
+    fontWeight: "600",
+  },
   setupLabel: { color: "#aaa", fontSize: 14, marginBottom: 8, marginTop: 10 },
   stepperRow: { flexDirection: "row", alignItems: "center", gap: 20, marginBottom: 4 },
   stepperBtn: { backgroundColor: "#1a4a7a", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 },
@@ -1319,4 +1595,34 @@ const styles = StyleSheet.create({
   quizSubmitBtn: { backgroundColor: "#27ae60", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
   quizScoreBar: { backgroundColor: "#1a4a7a", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
   quizScoreText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+  wordInputRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 14,
+    gap: 8,
+  },
+  wordInput: {
+    backgroundColor: "#0f3460", color: "#fff", borderRadius: 10,
+    padding: 14, fontSize: 18, borderWidth: 1, borderColor: "#1a4a7a",
+  },
+  lessonNavArrow: {
+    backgroundColor: "#1a4a7a",
+    borderRadius: 10,
+    width: 42,
+    height: 74,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  lessonNavArrowText: {
+    color: "#2CC985",
+    fontSize: 18,
+    fontWeight: "bold",
+  },
+  lessonNavHint: {
+    color: "#5DADE2",
+    fontSize: 11,
+    marginTop: 4,
+    marginLeft: 4,
+    fontStyle: "italic",
+  },
 });
