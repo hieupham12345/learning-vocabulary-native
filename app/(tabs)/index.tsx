@@ -3,10 +3,9 @@
  * Tái cấu trúc từ UI Tkinter Python sang React Native TSX
  * Tương thích với VocabularyLearner.ts (callChatbot service)
  *
- * CHANGES v3:
- * - [FIX] TTS: dùng react-native-tts (TTS engine có sẵn của điện thoại, offline, miễn phí)
- * - [NEW] Speed control: 1.0x → 2.0x, bước nhảy 0.1, persist qua AsyncStorage
- * - [FIX] tokenizeSentence: gọi API sau khi load example, cache vào ExampleItem.tokens
+ * CHANGES v4:
+ * - [FIX] Translation popup: tap ngoài khung → tự đóng (Pressable dismiss)
+ * - [FIX] TTS volume: set explicit volume: 1.0 (max của expo-speech)
  */
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
@@ -29,10 +28,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 import * as Speech from 'expo-speech';
 import { useFocusEffect } from 'expo-router';
-
+import { localDict } from "@/scripts/LocalDictionary";
 // ─────────────────────────────────────────────
 // TTS LANGUAGE MAP
-// Ánh xạ tên ngôn ngữ app → BCP-47 cho react-native-tts
 // ─────────────────────────────────────────────
 const LANG_TO_TTS: Record<string, string> = {
   Chinese:    "zh-CN",
@@ -42,32 +40,26 @@ const LANG_TO_TTS: Record<string, string> = {
   Korean:     "ko-KR",
 };
 
-// Delete the old initTts() entirely. expo-speech doesn't need it!
-
 async function speakText(text: string, language: string, rate: number = 1.0): Promise<void> {
   const langCode = LANG_TO_TTS[language] ?? "en-US";
   
   try {
     const isSpeaking = await Speech.isSpeakingAsync();
     if (isSpeaking) {
-      Speech.stop(); // Stop current audio if playing
+      Speech.stop();
     }
 
     Speech.speak(text, {
       language: langCode,
       rate: rate,
       pitch: 1.0,
+      volume: 1.0, // [v4] explicit max volume (expo-speech ceiling)
     });
   } catch (err: any) {
     console.warn("TTS error:", err);
     Alert.alert("TTS Error", "Could not play audio.");
   }
 }
-
-// ─────────────────────────────────────────────
-// TTS SERVICE — Using expo-speech (no init needed)
-// ─────────────────────────────────────────────
-
 
 // ─────────────────────────────────────────────
 // TYPES
@@ -80,7 +72,6 @@ interface ExampleItem {
   grammar_points: string[];
   difficulty_justification: string;
   difficulty_tag: string;
-  /** Cache tokens từ API tokenizeSentence; undefined = chưa tokenize */
   tokens?: string[];
 }
 
@@ -143,17 +134,17 @@ interface QuizHistoryEntry {
 // ─────────────────────────────────────────────
 const LANGUAGE_OPTIONS = ["Chinese", "English", "Japanese", "Vietnamese", "Korean"];
 const DIFFICULTY_COLORS: Record<string, string> = {
-  Easy:       "#2ECC71",
-  Medium:     "#F1C40F",
-  Hard:       "#E67E22",
+  Easy:         "#2ECC71",
+  Medium:       "#F1C40F",
+  Hard:         "#E67E22",
   "Super Hard": "#E74C3C",
 };
-const HISTORY_KEY           = "@vocab_history";
-const QUIZ_HISTORY_KEY      = "@quiz_history";
-const CURRENT_WORD_KEY      = "@current_word_data";
-const CURRENT_REVIEW_KEY    = "@current_quiz_review";
-const CURRENT_RETAKE_KEY    = "@current_quiz_retake";
-const SPEED_KEY             = "@tts_speed";
+const HISTORY_KEY        = "@vocab_history";
+const QUIZ_HISTORY_KEY   = "@quiz_history";
+const CURRENT_WORD_KEY   = "@current_word_data";
+const CURRENT_REVIEW_KEY = "@current_quiz_review";
+const CURRENT_RETAKE_KEY = "@current_quiz_retake";
+const SPEED_KEY          = "@tts_speed";
 
 const SPEED_MIN  = 1.0;
 const SPEED_MAX  = 2.0;
@@ -244,24 +235,24 @@ function TTSButton({
 // ─────────────────────────────────────────────
 export default function VocabularyLearnerUI() {
   // ── Input ──
-  const [word, setWord]             = useState("");
-  const [inputLang, setInputLang]   = useState("Chinese");
+  const [word, setWord]           = useState("");
+  const [inputLang, setInputLang] = useState("Chinese");
   const [outputLang, setOutputLang] = useState("English");
-  const [genMode, setGenMode]       = useState<"easy" | "hard">("hard");
+  const [genMode, setGenMode]     = useState<"easy" | "hard">("hard");
 
   // ── TTS Speed ──
   const [ttsSpeed, setTtsSpeed] = useState(1.0);
 
   // ── Learning ──
-  const [currentData, setCurrentData]             = useState<VocabData | null>(null);
-  const [allExamples, setAllExamples]             = useState<ExampleItem[]>([]);
-  const [exampleIndex, setExampleIndex]           = useState(0);
+  const [currentData, setCurrentData]               = useState<VocabData | null>(null);
+  const [allExamples, setAllExamples]               = useState<ExampleItem[]>([]);
+  const [exampleIndex, setExampleIndex]             = useState(0);
   const [romanizationVisible, setRomanizationVisible] = useState(false);
-  const [practiceSuccess, setPracticeSuccess]     = useState(0);
+  const [practiceSuccess, setPracticeSuccess]       = useState(0);
   const [practiceModalVisible, setPracticeModalVisible] = useState(false);
-  const [loading, setLoading]                     = useState(false);
-  const [quizLoading, setQuizLoading]             = useState(false);
-  const [status, setStatus]                       = useState("Ready to learn!");
+  const [loading, setLoading]                       = useState(false);
+  const [quizLoading, setQuizLoading]               = useState(false);
+  const [status, setStatus]                         = useState("Ready to learn!");
 
   // ── Tokenization status per exampleIndex ──
   const [tokenizeStatus, setTokenizeStatus] = useState<Record<number, "loading" | "done" | "error">>({});
@@ -280,12 +271,10 @@ export default function VocabularyLearnerUI() {
   const [quizWordCount, setQuizWordCount]         = useState(5);
   const [quizQuestionCount, setQuizQuestionCount] = useState(5);
 
-
   // ─────────────────────────────────────────────
   // INIT
   // ─────────────────────────────────────────────
   useEffect(() => {
-    // Restore persisted speed
     AsyncStorage.getItem(SPEED_KEY).then((val) => {
       if (val) {
         const n = parseFloat(val);
@@ -348,68 +337,89 @@ export default function VocabularyLearnerUI() {
   }, []);
 
   // ─────────────────────────────────────────────
-  // STORAGE
+  // TOKENIZATION — background preload
   // ─────────────────────────────────────────────
+  const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
-  // ─────────────────────────────────────────────
-  // TOKENIZATION — lazy, triggered by exampleIndex
-  // ─────────────────────────────────────────────
-  // ─────────────────────────────────────────────
-  // TOKENIZATION — background preload toàn bộ sau khi load examples
-  // ─────────────────────────────────────────────
+  useEffect(() => {
+    if (allExamples.length === 0 || !currentData) return;
 
-// Ref để cancel background process khi load word mới
-const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+    tokenizeAbortRef.current = { cancelled: false };
+    const abortToken = tokenizeAbortRef.current;
 
-// Trigger background tokenization khi allExamples thay đổi (load word mới)
-useEffect(() => {
-  if (allExamples.length === 0 || !currentData) return;
-
-  // Cancel batch cũ nếu đang chạy
-  tokenizeAbortRef.current = { cancelled: false };
-  const abortToken = tokenizeAbortRef.current;
-
-  const runBatch = async () => {
-    for (let i = 0; i < allExamples.length; i++) {
-      if (abortToken.cancelled) return;
-
-      const example = allExamples[i];
-      if (example.tokens && example.tokens.length > 0) continue;
-
-      setTokenizeStatus((prev) => {
-        if (prev[i] === "loading" || prev[i] === "done") return prev;
-        return { ...prev, [i]: "loading" };
-      });
-
-      try {
-        const tokens = await learner.tokenizeSentence(
-          example.sentence,
-          currentData.language.input ?? inputLang
-        );
+    const runBatch = async () => {
+      for (let i = 0; i < allExamples.length; i++) {
         if (abortToken.cancelled) return;
-        setAllExamples((prev) => {
-          const copy = [...prev];
-          if (!copy[i].tokens || copy[i].tokens!.length === 0) {
-            copy[i] = { ...copy[i], tokens };
-          }
-          return copy;
+
+        const example = allExamples[i];
+        if (example.tokens && example.tokens.length > 0) continue;
+
+        setTokenizeStatus((prev) => {
+          if (prev[i] === "loading" || prev[i] === "done") return prev;
+          return { ...prev, [i]: "loading" };
         });
-        setTokenizeStatus((prev) => ({ ...prev, [i]: "done" }));
-      } catch {
-        if (!abortToken.cancelled) {
-          setTokenizeStatus((prev) => ({ ...prev, [i]: "error" }));
+
+        try {
+          const tokens = await learner.tokenizeSentence(
+            example.sentence,
+            currentData.language.input ?? inputLang
+          );
+          if (abortToken.cancelled) return;
+          setAllExamples((prev) => {
+            const copy = [...prev];
+            if (!copy[i].tokens || copy[i].tokens!.length === 0) {
+              copy[i] = { ...copy[i], tokens };
+            }
+            return copy;
+          });
+          setTokenizeStatus((prev) => ({ ...prev, [i]: "done" }));
+
+          setCurrentData((prevData) => {
+            if (!prevData) return prevData;
+            const order = ["easy", "medium", "hard", "super_hard"] as const;
+            let flatIdx = 0;
+            const newExamples = { ...prevData.examples };
+            outer: for (const diff of order) {
+              const bucket = prevData.examples[diff] ?? [];
+              for (let j = 0; j < bucket.length; j++) {
+                if (flatIdx === i) {
+                  newExamples[diff] = [...bucket];
+                  newExamples[diff]![j] = { ...bucket[j], tokens };
+                  break outer;
+                }
+                flatIdx++;
+              }
+            }
+            const updatedData = { ...prevData, examples: newExamples };
+            AsyncStorage.getItem(HISTORY_KEY).then((raw) => {
+              if (!raw) return;
+              const arr: HistoryEntry[] = JSON.parse(raw);
+              const idx2 = arr.findIndex(
+                (e) => e.word === updatedData.word && e.input_lang === updatedData.language.input
+              );
+              if (idx2 !== -1) {
+                arr[idx2] = { ...arr[idx2], data: updatedData };
+                AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(arr));
+              }
+            });
+            return updatedData;
+          });
+          setTokenizeStatus((prev) => ({ ...prev, [i]: "done" }));
+        } catch {
+          if (!abortToken.cancelled) {
+            setTokenizeStatus((prev) => ({ ...prev, [i]: "error" }));
+          }
         }
       }
-    }
-  };
+    };
 
-  runBatch();
+    runBatch();
 
-  return () => {
-    abortToken.cancelled = true;
-  };
-// eslint-disable-next-line react-hooks/exhaustive-deps
-}, [allExamples.length, currentData?.word]);
+    return () => {
+      abortToken.cancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allExamples.length, currentData?.word]);
 
   // ─────────────────────────────────────────────
   // HELPERS
@@ -422,7 +432,7 @@ useEffect(() => {
         result.push({
           ...ex,
           difficulty_tag: diff.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-          tokens: undefined,
+          tokens: ex.tokens ?? undefined,
         });
       });
     }
@@ -452,7 +462,6 @@ useEffect(() => {
         word: word.trim(), input_lang: inputLang, output_lang: outputLang,
         timestamp: new Date().toISOString(), data,
       };
-      // Save to history for History tab
       const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
       const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
       const updated = [entry, ...historyArray].slice(0, 50);
@@ -464,28 +473,35 @@ useEffect(() => {
   };
 
   // ─────────────────────────────────────────────
-  // TYPING PRACTICE
+  // TRANSLATION POPUP
   // ─────────────────────────────────────────────
   const currentExample = allExamples[exampleIndex] ?? null;
 
-  // ─────────────────────────────────────────────
-  // TRANSLATION POPUP
-  // ─────────────────────────────────────────────
   const handleTokenPress = async (token: string) => {
-    const cached = currentData?.translation_cache?.[token];
-    if (cached) { setTranslationPopup({ text: token, translation: cached }); return; }
-    setTranslationPopup({ text: token, translation: "⏳ Translating..." });
-    try {
-      const result = await learner.translateText(token, inputLang, outputLang);
-      setTranslationPopup({ text: token, translation: result });
-      if (currentData) {
-        setCurrentData({
-          ...currentData,
-          translation_cache: { ...(currentData.translation_cache ?? {}), [token]: result },
-        });
-      }
-    } catch { setTranslationPopup({ text: token, translation: "❌ Translation failed." }); }
-  };
+  speakText(token, inputLang, ttsSpeed);
+
+  setTranslationPopup({ text: token, translation: "⏳ Translating..." });
+  
+  try {
+    // Đưa hàm gọi API (learner.translateText) thành fallback closure
+    const result = await localDict.translateToken(
+      token, 
+      inputLang, 
+      outputLang, 
+      () => learner.translateText(token, inputLang, outputLang) // Fallback L3
+    );
+
+    setTranslationPopup({ text: token, translation: result });
+    
+  } catch (err) {
+    setTranslationPopup({ text: token, translation: "❌ Translation failed." });
+  }
+};
+
+  // Thêm useEffect này để reset popup khi đổi ví dụ hoặc đổi từ
+  useEffect(() => {
+    setTranslationPopup(null);
+  }, [exampleIndex, currentData?.word]);
 
   // ─────────────────────────────────────────────
   // QUIZ
@@ -499,7 +515,6 @@ useEffect(() => {
 
   const startQuizGeneration = async () => {
     setQuizSetupVisible(false);
-    // Get recent words from history
     const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
     const historyArray = currentHistory ? JSON.parse(currentHistory) : [];
     if (historyArray.length === 0) { Alert.alert("Empty History", "Learn some words first!"); return; }
@@ -510,7 +525,6 @@ useEffect(() => {
     try {
       const data = await learner.generateQuiz(words, inputLang, outputLang, quizQuestionCount, genMode);
       if (data.error) { Alert.alert("Error", data.error); return; }
-      console.log("Generated quiz data:", data);
       setQuizWindowData({ data, words, mode: "take" });
     } catch (e: any) { Alert.alert("Error", e.message); }
     finally { setQuizLoading(false); setStatus("Ready to learn!"); }
@@ -582,13 +596,22 @@ useEffect(() => {
     );
   };
 
+
+  
   // ─────────────────────────────────────────────
   // MAIN RENDER
   // ─────────────────────────────────────────────
   return (
     <KeyboardAvoidingView style={styles.root} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
-
+    <ScrollView 
+        style={styles.scroll} 
+        contentContainerStyle={styles.scrollContent}
+        keyboardShouldPersistTaps="handled"
+        // 2. THÊM DÒNG NÀY: Chạm bất cứ đâu trên màn hình sẽ đóng pop up
+        onTouchStart={() => {
+          if (translationPopup) setTranslationPopup(null);
+        }}
+      >
         {/* HEADER */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>🌟 Vocabulary Learning</Text>
@@ -643,7 +666,6 @@ useEffect(() => {
         {currentData && (
           <View style={styles.card}>
 
-            {/* Speed control */}
             <SpeedControl speed={ttsSpeed} onSpeedChange={handleSpeedChange} />
 
             {/* Word + TTS */}
@@ -673,12 +695,27 @@ useEffect(() => {
                 <View style={styles.sentenceBox}>{renderSentenceTokens()}</View>
 
                 {translationPopup && (
-                  <View style={styles.translationPopup}>
+                  <View
+                    style={[styles.translationPopup, { maxHeight: 250 }]} 
+                    
+                    // 3. TẤM KHIÊN VÀNG: Bất cứ cú chạm hay vuốt nào bên trong Pop up 
+                    // sẽ bị chặn lại tại đây, không truyền lên ScrollView tổng ở Bước 2.
+                    onTouchStart={(e) => e.stopPropagation()} 
+                  >
                     <View style={styles.translationPopupHeader}>
                       <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
                       <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
                     </View>
-                    <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
+
+                    {/* ScrollView giờ đây sẽ cuộn cực kỳ mượt mà vì không bị Pressable cha cản trở */}
+                    <ScrollView 
+                      nestedScrollEnabled={true} 
+                      style={{ marginVertical: 8 }}
+                      showsVerticalScrollIndicator={true}
+                    >
+                      <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
+                    </ScrollView>
+
                     <TouchableOpacity onPress={() => setTranslationPopup(null)}>
                       <Text style={styles.translationPopupClose}>✕ Close</Text>
                     </TouchableOpacity>
@@ -688,23 +725,31 @@ useEffect(() => {
             )}
 
             {/* Navigation */}
-            <View style={styles.navRow}>
-              <TouchableOpacity
-                style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]}
-                onPress={() => { setExampleIndex((i) => Math.max(0, i - 1)); setRomanizationVisible(false); }}
-                disabled={exampleIndex === 0}
-              >
-                <Text style={styles.navBtnText}>⬅️ Prev</Text>
-              </TouchableOpacity>
-              <Text style={styles.counterText}>{exampleIndex + 1}/{allExamples.length}</Text>
-              <TouchableOpacity
-                style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]}
-                onPress={() => { setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1)); setRomanizationVisible(false); }}
-                disabled={exampleIndex >= allExamples.length - 1}
-              >
-                <Text style={styles.navBtnText}>Next ➡️</Text>
-              </TouchableOpacity>
-            </View>
+          <View style={styles.navRow}>
+            <TouchableOpacity
+              style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]}
+              onPress={() => { 
+                setExampleIndex((i) => Math.max(0, i - 1)); 
+                // setRomanizationVisible(false); // <-- ĐÃ XÓA DÒNG NÀY ĐỂ GIỮ TRẠNG THÁI
+              }}
+              disabled={exampleIndex === 0}
+            >
+              <Text style={styles.navBtnText}>⬅️ Prev</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.counterText}>{exampleIndex + 1}/{allExamples.length}</Text>
+
+            <TouchableOpacity
+              style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]}
+              onPress={() => { 
+                setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1)); 
+                // setRomanizationVisible(false); // <-- ĐÃ XÓA DÒNG NÀY ĐỂ GIỮ TRẠNG THÁI
+              }}
+              disabled={exampleIndex >= allExamples.length - 1}
+            >
+              <Text style={styles.navBtnText}>Next ➡️</Text>
+            </TouchableOpacity>
+          </View>
 
             <View style={styles.controlRow}>
               <TouchableOpacity style={styles.ctrlBtn} onPress={() => setRomanizationVisible((v) => !v)}>
@@ -810,12 +855,10 @@ useEffect(() => {
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              console.log("Saving quiz result:", entry);
               const currentQuizHistory = await AsyncStorage.getItem(QUIZ_HISTORY_KEY);
               const quizHistoryArray = currentQuizHistory ? JSON.parse(currentQuizHistory) : [];
               const updated = [entry, ...quizHistoryArray];
               await AsyncStorage.setItem(QUIZ_HISTORY_KEY, JSON.stringify(updated));
-              console.log("Quiz history saved successfully");
             } catch (e) {
               console.error("Error saving quiz history:", e);
             }
@@ -849,16 +892,15 @@ function MemoryCheckModal({
   ttsSpeed: number;
   onClose: () => void;
 }) {
-  const [shuffled]      = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
-  const [idx, setIdx]   = useState(0);
+  const [shuffled]        = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
+  const [idx, setIdx]     = useState(0);
   const [input, setInput] = useState("");
   const [showHint, setShowHint] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone]   = useState(false);
 
   const current = shuffled[idx];
   const target  = current?.sentence?.trim() ?? "";
 
-  // Auto-play TTS khi chuyển sang câu mới
   useEffect(() => {
     if (!current?.sentence) return;
     const t = setTimeout(() => speakText(current.sentence, inputLang, ttsSpeed), 350);
@@ -943,12 +985,7 @@ function MemoryCheckModal({
 }
 
 function TypingPracticeModal({
-  example,
-  currentScore,
-  onClose,
-  onCorrect,
-  inputLang,
-  ttsSpeed,
+  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed,
 }: {
   example: ExampleItem | null;
   currentScore: number;
@@ -957,7 +994,7 @@ function TypingPracticeModal({
   inputLang: string;
   ttsSpeed: number;
 }) {
-  const [input, setInput] = useState("");
+  const [input, setInput]       = useState("");
   const [completed, setCompleted] = useState(false);
   const target = example?.sentence?.trim() ?? "";
 

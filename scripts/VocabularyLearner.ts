@@ -1,10 +1,10 @@
 // VocabularyLearner.ts
 import Constants from "expo-constants";
 import { callChatbot } from "./chatbotService";
+import { OPENAI_API_KEY } from "./config";
 
 // Trong React Native, biến môi trường nên được cấu hình qua file .env + Expo config extra.
-const OPENAI_API_KEY =
-  process.env.OPENAI_API_KEY ||
+const GPT_API_KEY = OPENAI_API_KEY || process.env.OPENAI_API_KEY ||
   Constants.expoConfig?.extra?.OPENAI_API_KEY ||
   (Constants.manifest as any)?.extra?.OPENAI_API_KEY ||
   "";
@@ -33,7 +33,7 @@ export class VocabularyLearner {
   private modelType: string;
   private modelName: string;
 
-  constructor(apiKey: string = OPENAI_API_KEY) {
+  constructor(apiKey: string = GPT_API_KEY) {
     this.apiKey = apiKey;
     this.modelType = "chatgpt"; // Mặc định theo logic cũ
     this.modelName = "gpt-5.4-mini"; // Đã cập nhật model name tiêu chuẩn hơn (gpt-4o-mini thay vì gpt-5.4-mini)

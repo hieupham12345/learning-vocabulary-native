@@ -16,6 +16,7 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
+import { localDict } from "../../scripts/LocalDictionary";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from 'expo-router';
 
@@ -79,20 +80,35 @@ export default function HistoryScreen() {
   // ─────────────────────────────────────────────
   // CLEAR HISTORY
   // ─────────────────────────────────────────────
-  const handleClearHistory = () => {
-    Alert.alert("Confirm", "Clear all history?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clear", style: "destructive", onPress: async () => {
-          setHistory([]); setQuizHistory([]);
-          await AsyncStorage.removeItem(HISTORY_KEY);
-          await AsyncStorage.removeItem(QUIZ_HISTORY_KEY);
-          Alert.alert("Success", "All history cleared!");
-        },
-      },
-    ]);
-  };
+// ─────────────────────────────────────────────
+  // CLEAR HISTORY
+  // ─────────────────────────────────────────────
+  const handleClearHistory = () => {
+    Alert.alert("Confirm", "Clear all history and dictionary cache?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clear", style: "destructive", onPress: async () => {
+          // 1. Reset UI state
+          setHistory([]); 
+          setQuizHistory([]);
 
+          // 2. Clear all AsyncStorage keys simultaneously
+          await AsyncStorage.multiRemove([
+            HISTORY_KEY,
+            QUIZ_HISTORY_KEY,
+            CURRENT_REVIEW_KEY,
+            CURRENT_RETAKE_KEY,
+            "@current_word_data"
+          ]);
+
+          // 3. Clear SQLite & Memory Cache
+          localDict.clearAllData();
+
+          Alert.alert("Success", "All history and cache cleared!");
+        },
+      },
+    ]);
+  };
   // ─────────────────────────────────────────────
   // LOAD WORD FROM HISTORY
   // ─────────────────────────────────────────────
