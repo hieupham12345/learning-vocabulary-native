@@ -350,6 +350,15 @@ export default function VocabularyLearnerUI() {
   } | null>(null);
 
   const [historyCount, setHistoryCount] = useState(0);
+  // Ref để track synchronous xem đã có currentData chưa
+  // (tránh stale closure trong useFocusEffect)
+  const hasDataRef = useRef(false);
+
+  // Sync hasDataRef mỗi khi currentData thay đổi
+  useEffect(() => {
+    hasDataRef.current = currentData !== null;
+  }, [currentData]);
+
 
   // ─────────────────────────────────────────────
   // INIT — load TTS speed
@@ -466,42 +475,19 @@ export default function VocabularyLearnerUI() {
           }
 
           // Restore last session — chỉ khi không có data nào khác
-          if (lastLearnedRaw) {
-            // Dùng functional check để tránh stale closure của currentData
-            setCurrentData((prev) => {
-              if (prev !== null) return prev; // đã có data, không override
-              const entry: HistoryEntry = JSON.parse(lastLearnedRaw);
-              const examples = prepareExamples(entry.data);
-              // Các state khác phải set riêng bên ngoài — xem bên dưới
-              return entry.data;
-            });
-            // Set các state đi kèm bên ngoài setState
-            setCurrentData((prev) => {
-              if (prev !== null) return prev;
-              return prev; // sẽ không xảy ra — chỉ để trigger
-            });
-            // Approach đơn giản hơn: đọc currentData synchronous không được,
-            // nên dùng ref để check
+          if (lastLearnedRaw && !hasDataRef.current) {
             const entry: HistoryEntry = JSON.parse(lastLearnedRaw);
-            // NOTE: Đây sẽ chạy mỗi focus, nhưng setCurrentData bên dưới
-            // sẽ check ref để không override nếu đã có.
-            setCurrentData((prev) => {
-              if (prev !== null) return prev;
-              setTimeout(() => {
-                // Delayed set cho các state phụ — chỉ chạy khi prev === null
-                const examples = prepareExamples(entry.data);
-                setAllExamples(examples);
-                setExampleIndex(0);
-                setTokenizeStatus({});
-                setRomanizationVisible(false);
-                setPracticeSuccess(0);
-                setWord(entry.word);
-                setInputLang(entry.input_lang);
-                setOutputLang(entry.output_lang);
-                setStatus(`📂 Restored '${entry.word}' from last session`);
-              }, 0);
-              return entry.data;
-            });
+            const examples = prepareExamples(entry.data);
+            setCurrentData(entry.data);
+            setAllExamples(examples);
+            setExampleIndex(0);
+            setTokenizeStatus({});
+            setRomanizationVisible(false);
+            setPracticeSuccess(0);
+            setWord(entry.word);
+            setInputLang(entry.input_lang);
+            setOutputLang(entry.output_lang);
+            setStatus(`📂 Restored '${entry.word}' from last session`);
           }
         } catch (e) {
           console.error("Error loading pending history actions:", e);
