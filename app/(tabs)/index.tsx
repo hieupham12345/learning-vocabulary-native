@@ -1177,6 +1177,90 @@ export default function VocabularyLearnerUI() {
 // SUB-COMPONENTS
 // ─────────────────────────────────────────────
 
+function ColoredInput({
+  input,
+  target,
+  placeholder,
+  onChangeText,
+  autoFocus = false,
+}: {
+  input: string;
+  target: string;
+  placeholder?: string;
+  onChangeText: (text: string) => void;
+  autoFocus?: boolean;
+}) {
+  // Overlay hiển thị từng ký tự với màu đúng/sai
+  const renderChars = () => {
+    if (input.length === 0) return null;
+    return (
+      <Text style={overlayStyle.text} pointerEvents="none">
+        {input.split("").map((char, i) => {
+          const correct = i < target.length && char === target[i];
+          return (
+            <Text key={i} style={{ color: correct ? "#2ECC71" : "#E74C3C" }}>
+              {char}
+            </Text>
+          );
+        })}
+      </Text>
+    );
+  };
+
+  return (
+    <View style={overlayStyle.wrapper}>
+      {renderChars()}
+      <TextInput
+        style={[overlayStyle.input, input.length > 0 && overlayStyle.inputTransparentText]}
+        value={input}
+        onChangeText={onChangeText}
+        placeholder={input.length === 0 ? (placeholder ?? "Type here...") : ""}
+        placeholderTextColor="#555"
+        multiline
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoFocus={autoFocus}
+      />
+    </View>
+  );
+}
+
+const overlayStyle = StyleSheet.create({
+  wrapper: {
+    position: "relative",
+    backgroundColor: "#1a1a1a",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#333",
+    minHeight: 60,
+  },
+  text: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    right: 10,
+    fontSize: 17,
+    lineHeight: 24,
+    zIndex: 2,
+    flexWrap: "wrap",
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  input: {
+    fontSize: 17,
+    lineHeight: 24,
+    padding: 10,
+    color: "#fff",
+    minHeight: 60,
+    zIndex: 1,
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  // Khi có nội dung, làm chữ TextInput trong suốt để overlay hiện lên
+  inputTransparentText: {
+    color: "transparent",
+  },
+});
+
+
 function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
   if (!value || value === "N/A") return null;
   return (
@@ -1205,19 +1289,11 @@ function MemoryCheckModal({
   const current = shuffled[idx];
   const target  = current?.sentence?.trim() ?? "";
 
-  // Speak on mount and when example changes
   useEffect(() => {
     if (!current?.sentence) return;
     const t = setTimeout(() => speakText(current.sentence, inputLang, ttsSpeed), 350);
     return () => clearTimeout(t);
   }, [idx]);
-
-  // Real-time colour feedback (same logic as TypingPracticeModal)
-  const isCorrect = input.length > 0 && input === target;
-  const isWrong   = input.length > 0 && !target.startsWith(input);
-
-  const inputBorderColor = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#333";
-  const inputColor       = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#fff";
 
   const handleChange = (text: string) => {
     setInput(text);
@@ -1226,7 +1302,6 @@ function MemoryCheckModal({
       if (next >= shuffled.length) {
         setDone(true);
       } else {
-        // Small delay so user sees the green flash before moving on
         setTimeout(() => {
           setIdx(next);
           setInput("");
@@ -1259,23 +1334,28 @@ function MemoryCheckModal({
 
             <View style={styles.memCheckTtsRow}>
               <Text style={styles.memCheckInstruction}>Translate back to the original language:</Text>
-              <TTSButton onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
+              <TTSButton
+                onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)}
+                size={17} label="🔊 Replay"
+              />
             </View>
 
+            {/* CHỈ hiện bản dịch — KHÔNG hiện câu gốc */}
             <Text style={styles.memCheckTranslation}>{current?.translation}</Text>
 
-            {showHint && <Text style={styles.memCheckHint}>{target}</Text>}
+            {/* Hint: chỉ show khi giữ nút, và chỉ show câu gốc */}
+            {showHint && (
+              <View style={[styles.typingTargetBox, { marginBottom: 12, borderColor: "#E67E22" }]}>
+                <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
+              </View>
+            )}
 
-            {/* Input with dynamic border + text colour */}
-            <TextInput
-              style={[styles.practiceInput, { borderColor: inputBorderColor, color: inputColor }]}
-              value={input}
-              onChangeText={handleChange}
+            {/* Input với overlay màu từng ký tự */}
+            <ColoredInput
+              input={input}
+              target={target}
               placeholder="Type here..."
-              placeholderTextColor="#555"
-              multiline
-              autoCapitalize="none"
-              autoCorrect={false}
+              onChangeText={handleChange}
               autoFocus
             />
 
@@ -1294,6 +1374,7 @@ function MemoryCheckModal({
     </Modal>
   );
 }
+
 
 // ── Typing Practice Modal ──
 function TypingPracticeModal({
@@ -1316,12 +1397,6 @@ function TypingPracticeModal({
     return () => clearTimeout(timeout);
   }, [example?.sentence]);
 
-  // Real-time colour feedback:
-  // - green  → user input matches target so far (prefix match) OR fully correct
-  // - red    → current input does NOT match the beginning of target
-  const isCorrect = input.length > 0 && input === target;
-  const isWrong   = input.length > 0 && !target.startsWith(input);
-
   const handleChange = (text: string) => {
     setInput(text);
     if (text === target && target.length > 0) {
@@ -1330,9 +1405,6 @@ function TypingPracticeModal({
       setTimeout(() => { setInput(""); setCompleted(false); }, 700);
     }
   };
-
-  const inputBorderColor = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#333";
-  const inputColor       = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#fff";
 
   return (
     <Modal visible animationType="slide">
@@ -1344,28 +1416,24 @@ function TypingPracticeModal({
           </TouchableOpacity>
         </View>
         <ScrollView contentContainerStyle={styles.typingBody}>
-          {/* Score — no upper limit */}
           <Text style={styles.typingProgress}>Score: {currentScore}</Text>
 
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <Text style={styles.typingPrompt}>Type the current example sentence exactly:</Text>
+            <Text style={styles.typingPrompt}>Type the sentence exactly:</Text>
             <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
           </View>
 
+          {/* Câu gốc hiện rõ để user nhìn mà gõ */}
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
 
-          {/* Input with dynamic border + text colour */}
-          <TextInput
-            style={[styles.practiceInput, { borderColor: inputBorderColor, color: inputColor }]}
-            value={input}
-            onChangeText={handleChange}
+          {/* Input với overlay màu từng ký tự */}
+          <ColoredInput
+            input={input}
+            target={target}
             placeholder="Type here..."
-            placeholderTextColor="#555"
-            multiline
-            autoCapitalize="none"
-            autoCorrect={false}
+            onChangeText={handleChange}
             autoFocus
           />
 
