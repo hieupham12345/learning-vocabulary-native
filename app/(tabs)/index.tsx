@@ -1,26 +1,3 @@
-/**
- * VocabularyLearnerUI.tsx
- * Tái cấu trúc từ UI Tkinter Python sang React Native TSX
- * Tương thích với VocabularyLearner.ts (callChatbot service)
- *
- * CHANGES v4:
- * - [FIX] Translation popup: tap ngoài khung → tự đóng (Pressable dismiss)
- * - [FIX] TTS volume: set explicit volume: 1.0 (max của expo-speech)
- *
- * CHANGES v5:
- * - [FEATURE] Quiz: lọc history theo inputLang hiện tại, tránh mix nhiều ngôn ngữ
- * - [UI] Quiz Setup: hiển thị ngôn ngữ đang filter + cảnh báo nếu không đủ từ
- *
- * CHANGES v6 (BUG FIXES):
- * - [FIX] Tokenize: chạy song song (Promise.allSettled) thay vì tuần tự
- * - [FIX] Tokenize: deduplicate guard dùng Set để tránh double API call khi parallel
- * - [FIX] Tokenize: bỏ duplicate setTokenizeStatus("done") call
- * - [FIX] Tokenize: tách AsyncStorage.setItem ra khỏi setState updater (anti-pattern)
- * - [FIX] History: LAST_LEARNED_KEY được sync sau khi tokenize hoàn tất
- * - [FIX] navigateLesson: thêm LAST_LEARNED_KEY update còn thiếu
- * - [FIX] handleLearnWord: clear lessonNav khi user learn word mới
- */
-
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
@@ -1228,18 +1205,34 @@ function MemoryCheckModal({
   const current = shuffled[idx];
   const target  = current?.sentence?.trim() ?? "";
 
+  // Speak on mount and when example changes
   useEffect(() => {
     if (!current?.sentence) return;
     const t = setTimeout(() => speakText(current.sentence, inputLang, ttsSpeed), 350);
     return () => clearTimeout(t);
   }, [idx]);
 
+  // Real-time colour feedback (same logic as TypingPracticeModal)
+  const isCorrect = input.length > 0 && input === target;
+  const isWrong   = input.length > 0 && !target.startsWith(input);
+
+  const inputBorderColor = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#333";
+  const inputColor       = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#fff";
+
   const handleChange = (text: string) => {
     setInput(text);
     if (text === target && target.length > 0) {
       const next = idx + 1;
-      if (next >= shuffled.length) { setDone(true); }
-      else { setIdx(next); setInput(""); setShowHint(false); }
+      if (next >= shuffled.length) {
+        setDone(true);
+      } else {
+        // Small delay so user sees the green flash before moving on
+        setTimeout(() => {
+          setIdx(next);
+          setInput("");
+          setShowHint(false);
+        }, 500);
+      }
     }
   };
 
@@ -1252,6 +1245,7 @@ function MemoryCheckModal({
             <Text style={styles.memCheckClose}>✕</Text>
           </TouchableOpacity>
         </View>
+
         {done ? (
           <View style={styles.memCheckDone}>
             <Text style={styles.memCheckDoneText}>🎉 Amazing! You've recalled all examples!</Text>
@@ -1262,14 +1256,19 @@ function MemoryCheckModal({
         ) : (
           <ScrollView contentContainerStyle={styles.memCheckBody}>
             <Text style={styles.memCheckProgress}>Progress: {idx + 1}/{shuffled.length}</Text>
+
             <View style={styles.memCheckTtsRow}>
               <Text style={styles.memCheckInstruction}>Translate back to the original language:</Text>
               <TTSButton onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
             </View>
+
             <Text style={styles.memCheckTranslation}>{current?.translation}</Text>
+
             {showHint && <Text style={styles.memCheckHint}>{target}</Text>}
+
+            {/* Input with dynamic border + text colour */}
             <TextInput
-              style={styles.practiceInput}
+              style={[styles.practiceInput, { borderColor: inputBorderColor, color: inputColor }]}
               value={input}
               onChangeText={handleChange}
               placeholder="Type here..."
@@ -1279,8 +1278,13 @@ function MemoryCheckModal({
               autoCorrect={false}
               autoFocus
             />
+
             <View style={styles.memCheckBtnRow}>
-              <TouchableOpacity style={styles.hintBtn} onPressIn={() => setShowHint(true)} onPressOut={() => setShowHint(false)}>
+              <TouchableOpacity
+                style={styles.hintBtn}
+                onPressIn={() => setShowHint(true)}
+                onPressOut={() => setShowHint(false)}
+              >
                 <Text style={styles.hintBtnText}>💡 Hold for Hint</Text>
               </TouchableOpacity>
             </View>
@@ -1312,14 +1316,23 @@ function TypingPracticeModal({
     return () => clearTimeout(timeout);
   }, [example?.sentence]);
 
+  // Real-time colour feedback:
+  // - green  → user input matches target so far (prefix match) OR fully correct
+  // - red    → current input does NOT match the beginning of target
+  const isCorrect = input.length > 0 && input === target;
+  const isWrong   = input.length > 0 && !target.startsWith(input);
+
   const handleChange = (text: string) => {
     setInput(text);
     if (text === target && target.length > 0) {
       onCorrect();
       setCompleted(true);
-      setTimeout(() => { setInput(""); setCompleted(false); }, 800);
+      setTimeout(() => { setInput(""); setCompleted(false); }, 700);
     }
   };
+
+  const inputBorderColor = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#333";
+  const inputColor       = isCorrect ? "#2ECC71" : isWrong ? "#E74C3C" : "#fff";
 
   return (
     <Modal visible animationType="slide">
@@ -1331,18 +1344,21 @@ function TypingPracticeModal({
           </TouchableOpacity>
         </View>
         <ScrollView contentContainerStyle={styles.typingBody}>
-          <Text style={styles.typingProgress}>Score: {currentScore}/3</Text>
-          <View style={{ display: "flex", flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          {/* Score — no upper limit */}
+          <Text style={styles.typingProgress}>Score: {currentScore}</Text>
+
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <Text style={styles.typingPrompt}>Type the current example sentence exactly:</Text>
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginBottom: 6 }}>
-              <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
-            </View>
+            <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
           </View>
+
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
+
+          {/* Input with dynamic border + text colour */}
           <TextInput
-            style={styles.practiceInput}
+            style={[styles.practiceInput, { borderColor: inputBorderColor, color: inputColor }]}
             value={input}
             onChangeText={handleChange}
             placeholder="Type here..."
@@ -1352,12 +1368,14 @@ function TypingPracticeModal({
             autoCorrect={false}
             autoFocus
           />
+
           {completed && (
             <View style={styles.typingSuccessBox}>
               <Text style={styles.typingSuccessText}>✅ Correct! Keep going.</Text>
             </View>
           )}
-          <TouchableOpacity style={styles.btnPrimary} onPress={onClose}>
+
+          <TouchableOpacity style={[styles.btnPrimary, { marginTop: 16 }]} onPress={onClose}>
             <Text style={styles.btnPrimaryText}>Close Practice</Text>
           </TouchableOpacity>
         </ScrollView>
