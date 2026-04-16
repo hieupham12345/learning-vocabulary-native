@@ -487,6 +487,9 @@ export default function VocabularyLearnerUI() {
   const tokenizingSet = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
+  const inflight = useRef<Set<string>>(new Set());
+
+
   useEffect(() => {
     if (allExamples.length === 0 || !currentData) return;
 
@@ -632,8 +635,17 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   const handleLearnWord = async () => {
     if (!word.trim()) { Alert.alert("Error", "Please enter a word."); return; }
-
-    // [FIX v6] Clear lessonNav khi user learn word mới thủ công
+  
+    // ── Dedup key ──────────────────────────────────────────────────────────────
+    const key = `learn:${word.trim()}:${inputLang}:${outputLang}`;
+    if (inflight.current.has(key)) {
+      setStatus(`⏳ Already fetching '${word.trim()}', please wait…`);
+      return;
+    }
+    inflight.current.add(key);
+    // ──────────────────────────────────────────────────────────────────────────
+  
+    // Clear lessonNav nếu user learn từ mới thủ công
     if (lessonNav) {
       const navWord = lessonNav.words[lessonNav.currentIndex]?.word;
       if (navWord !== word.trim()) {
@@ -641,7 +653,7 @@ export default function VocabularyLearnerUI() {
         await AsyncStorage.removeItem(LESSON_NAVIGATION_KEY);
       }
     }
-
+  
     setLoading(true);
     setStatus(`🔄 Learning '${word}' (${genMode} mode)...`);
     try {
@@ -655,17 +667,18 @@ export default function VocabularyLearnerUI() {
       setRomanizationVisible(false);
       setPracticeSuccess(0);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
-
+  
       const entry: HistoryEntry = {
         word: word.trim(), input_lang: inputLang, output_lang: outputLang,
         timestamp: new Date().toISOString(), data,
       };
-      await saveHistoryEntry(entry); // [FIX v6] dùng helper thống nhất
+      await saveHistoryEntry(entry);
     } catch (e: any) {
       Alert.alert("Error", e.message);
       setStatus("Error occurred.");
     } finally {
       setLoading(false);
+      inflight.current.delete(key); // ← luôn giải phóng dù lỗi hay thành công
     }
   };
 
@@ -741,6 +754,17 @@ export default function VocabularyLearnerUI() {
   const currentExample = allExamples[exampleIndex] ?? null;
 
   const handleTokenPress = async (token: string) => {
+    // ── Dedup key ──────────────────────────────────────────────────────────────
+    const key = `translate:${token}:${inputLang}:${outputLang}`;
+    if (inflight.current.has(key)) {
+      // Đã có request đang chạy cho token này.
+      // Vẫn play TTS nhưng không gọi API dịch trùng.
+      speakText(token, inputLang, ttsSpeed);
+      return;
+    }
+    inflight.current.add(key);
+    // ──────────────────────────────────────────────────────────────────────────
+  
     speakText(token, inputLang, ttsSpeed);
     setTranslationPopup({ text: token, translation: "⏳ Translating..." });
     try {
@@ -753,6 +777,8 @@ export default function VocabularyLearnerUI() {
       setTranslationPopup({ text: token, translation: result });
     } catch {
       setTranslationPopup({ text: token, translation: "❌ Translation failed." });
+    } finally {
+      inflight.current.delete(key); // ← luôn giải phóng
     }
   };
 
@@ -792,20 +818,32 @@ export default function VocabularyLearnerUI() {
     setQuizSetupVisible(false);
     const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
     const historyArray: HistoryEntry[] = currentHistory ? JSON.parse(currentHistory) : [];
-
+  
     const quizLang = currentData?.language?.input ?? inputLang;
     const filteredByLang = historyArray.filter((e) => e.input_lang === quizLang);
-
+  
     if (filteredByLang.length === 0) {
       Alert.alert("No Words Found", `No ${quizLang} words in history.`);
       return;
     }
-
+  
     const words = filteredByLang.slice(0, quizWordCount).map((e) => e.word);
+  
+    // ── Dedup key ──────────────────────────────────────────────────────────────
+    const key = `quiz:${words.join("|")}:${quizQuestionCount}:${genMode}`;
+    if (inflight.current.has(key)) {
+      setStatus("⏳ Quiz đang được tạo, vui lòng chờ…");
+      return;
+    }
+    inflight.current.add(key);
+    // ──────────────────────────────────────────────────────────────────────────
+  
     setQuizLoading(true);
     setStatus(`🔄 Generating ${quizQuestionCount}-question ${quizLang} quiz...`);
     try {
-      const data = await learner.generateQuiz(words, quizLang, outputLang, quizQuestionCount, genMode);
+      const data = await learner.generateQuiz(
+        words, quizLang, outputLang, quizQuestionCount, genMode
+      );
       if (data.error) { Alert.alert("Error", data.error); return; }
       setQuizWindowData({ data, words, mode: "take" });
     } catch (e: any) {
@@ -813,9 +851,14 @@ export default function VocabularyLearnerUI() {
     } finally {
       setQuizLoading(false);
       setStatus("Ready to learn!");
+      inflight.current.delete(key); // ← luôn giải phóng
     }
   };
 
+
+  useEffect(() => {
+    inflight.current.clear();
+  }, [currentData?.word]);
   // ─────────────────────────────────────────────
   // RENDER HELPERS
   // ─────────────────────────────────────────────
