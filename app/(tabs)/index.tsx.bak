@@ -21,23 +21,6 @@ import { useFocusEffect } from 'expo-router';
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 
-// ─── SQLite DB layer ──────────────────────────────────────────────────────────
-import {
-  initDatabase,
-  saveWord,
-  loadWord,
-  listWordsFull,
-  updateExamples,
-  saveQuiz,
-  kvGet,
-  kvSet,
-  kvDelete,
-  migrateFromAsyncStorage,
-  type HistoryEntry,
-  type VocabData,
-  type QuizHistoryEntry,
-} from "@/scripts/ExampleDB";
-
 // ─────────────────────────────────────────────
 // TTS LANGUAGE MAP
 // ─────────────────────────────────────────────
@@ -85,9 +68,9 @@ interface VocabOverview {
   collocations: string[];
 }
 
-// NOTE: VocabData & HistoryEntry & QuizHistoryEntry are imported from ExampleDB
-// Re-export local aliases for ergonomics
-type LocalVocabData = VocabData & {
+interface VocabData {
+  word: string;
+  language: { input: string; output: string };
   overview: VocabOverview;
   examples: {
     easy?: ExampleItem[];
@@ -95,7 +78,16 @@ type LocalVocabData = VocabData & {
     hard?: ExampleItem[];
     super_hard?: ExampleItem[];
   };
-};
+  translation_cache?: Record<string, string>;
+}
+
+interface HistoryEntry {
+  word: string;
+  input_lang: string;
+  output_lang: string;
+  timestamp: string;
+  data: VocabData;
+}
 
 interface QuizQuestion {
   difficulty: string;
@@ -111,6 +103,15 @@ interface QuizData {
   quiz: QuizQuestion[];
 }
 
+interface QuizHistoryEntry {
+  words: string[];
+  score: number;
+  total: number;
+  timestamp: string;
+  quiz_data: QuizData;
+  user_answers: string[];
+}
+
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
@@ -121,20 +122,17 @@ const DIFFICULTY_COLORS: Record<string, string> = {
   Hard:         "#E67E22",
   "Super Hard": "#E74C3C",
 };
-
-// Only CURRENT_WORD_KEY stays in AsyncStorage — it's a transient navigation intent
-// that must survive to the next screen focus even if app restarts. All history
-// and settings are now in SQLite via ExampleDB.
+const HISTORY_KEY        = "@vocab_history";
+const QUIZ_HISTORY_KEY   = "@quiz_history";
 const CURRENT_WORD_KEY   = "@current_word_data";
+const CURRENT_REVIEW_KEY = "@current_quiz_review";
+const CURRENT_RETAKE_KEY = "@current_quiz_retake";
+const SPEED_KEY          = "@tts_speed";
 
-// KV keys used with ExampleDB kvSet/kvGet
-const KV_LAST_LEARNED   = "last_learned";
-const KV_TTS_SPEED      = "tts_speed";
-const KV_LESSON_NAV     = "lesson_nav";
-const KV_PENDING_WORD   = "pending_word";
-const KV_QUIZ_REVIEW    = "quiz_review";
-const KV_QUIZ_RETAKE    = "quiz_retake";
-const KV_MIGRATED       = "migrated_from_async";
+const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
+const LAST_LEARNED_KEY        = "@last_learned_word";
+
+const LESSON_NAVIGATION_KEY = "@lesson_navigation_context";
 
 const SPEED_MIN  = 1.0;
 const SPEED_MAX  = 2.0;
@@ -147,14 +145,14 @@ const learner = new VocabularyLearner();
 // ─────────────────────────────────────────────
 
 /**
- * Flatten VocabData examples into a flat ExampleItem[], assigning difficulty_tag
- * from bucket name.
+ * Flatten VocabData examples thành mảng phẳng ExampleItem[],
+ * gán difficulty_tag đúng theo bucket.
  */
-const prepareExamples = (data: LocalVocabData): ExampleItem[] => {
+const prepareExamples = (data: VocabData): ExampleItem[] => {
   const order = ["easy", "medium", "hard", "super_hard"] as const;
   const result: ExampleItem[] = [];
   for (const diff of order) {
-    (data.examples[diff] ?? []).forEach((ex: ExampleItem) => {
+    (data.examples[diff] ?? []).forEach((ex) => {
       result.push({
         ...ex,
         difficulty_tag: diff.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -166,10 +164,11 @@ const prepareExamples = (data: LocalVocabData): ExampleItem[] => {
 };
 
 /**
- * Map a flat index back to (bucketName, indexInBucket) in VocabData.examples.
+ * Tính lại vị trí (bucketName, indexInBucket) từ flatIndex.
+ * Dùng khi cần patch token vào VocabData.examples.
  */
 const flatIndexToBucketPos = (
-  examples: LocalVocabData["examples"],
+  examples: VocabData["examples"],
   flatIndex: number
 ): { diff: "easy" | "medium" | "hard" | "super_hard"; j: number } | null => {
   const order = ["easy", "medium", "hard", "super_hard"] as const;
@@ -185,19 +184,26 @@ const flatIndexToBucketPos = (
 };
 
 /**
- * Save / upsert a word entry to SQLite and update the last_learned KV.
- * Drop-in replacement for the old saveHistoryEntry that used AsyncStorage.
+ * Lưu history + đồng bộ LAST_LEARNED_KEY.
+ * Tất cả nơi save history đều gọi hàm này để đảm bảo nhất quán.
  */
 const saveHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
-  await saveWord(
-    entry.word,
-    entry.input_lang,
-    entry.output_lang,
-    entry.data as VocabData,
-    entry.timestamp,
+  const raw = await AsyncStorage.getItem(HISTORY_KEY);
+  const arr: HistoryEntry[] = raw ? JSON.parse(raw) : [];
+  // Upsert: nếu đã có cùng word + lang thì replace, không thêm duplicate
+  const existingIdx = arr.findIndex(
+    (e) => e.word === entry.word && e.input_lang === entry.input_lang
   );
-  // saveWord already writes last_learned KV inside ExampleDB.
-  // Nothing more needed here — kept for API compatibility.
+  let updated: HistoryEntry[];
+  if (existingIdx !== -1) {
+    updated = [entry, ...arr.filter((_, i) => i !== existingIdx)].slice(0, 50);
+  } else {
+    updated = [entry, ...arr].slice(0, 50);
+  }
+  await Promise.all([
+    AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(updated)),
+    AsyncStorage.setItem(LAST_LEARNED_KEY, JSON.stringify(entry)),
+  ]);
 };
 
 // ─────────────────────────────────────────────
@@ -286,7 +292,7 @@ export default function VocabularyLearnerUI() {
   const [ttsSpeed, setTtsSpeed] = useState(1.5);
 
   // ── Learning ──
-  const [currentData, setCurrentData]                 = useState<LocalVocabData | null>(null);
+  const [currentData, setCurrentData]                 = useState<VocabData | null>(null);
   const [allExamples, setAllExamples]                 = useState<ExampleItem[]>([]);
   const [exampleIndex, setExampleIndex]               = useState(0);
   const [romanizationVisible, setRomanizationVisible] = useState(false);
@@ -321,107 +327,75 @@ export default function VocabularyLearnerUI() {
   } | null>(null);
 
   const [historyCount, setHistoryCount] = useState(0);
-
-  // Ref to track synchronously whether currentData is loaded
-  // (avoids stale closure in useFocusEffect)
+  // Ref để track synchronous xem đã có currentData chưa
+  // (tránh stale closure trong useFocusEffect)
   const hasDataRef = useRef(false);
 
+  // Sync hasDataRef mỗi khi currentData thay đổi
   useEffect(() => {
     hasDataRef.current = currentData !== null;
   }, [currentData]);
 
+
   // ─────────────────────────────────────────────
-  // INIT — DB init + one-time migration + load TTS speed
+  // INIT — load TTS speed
   // ─────────────────────────────────────────────
   useEffect(() => {
-    const bootstrap = async () => {
-      // 1. Ensure SQLite schema is ready
-      await initDatabase();
-
-      // 2. One-time migration from AsyncStorage → SQLite
-      const alreadyMigrated = await kvGet<boolean>(KV_MIGRATED);
-      if (!alreadyMigrated) {
-        try {
-          const counts = await migrateFromAsyncStorage(AsyncStorage);
-          console.log(`[migrate] words=${counts.words} quizzes=${counts.quizzes}`);
-        } catch (e) {
-          console.warn("[migrate] error:", e);
-        }
-        await kvSet(KV_MIGRATED, true);
+    AsyncStorage.getItem(SPEED_KEY).then((val) => {
+      if (val) {
+        const n = parseFloat(val);
+        if (!isNaN(n)) setTtsSpeed(n);
       }
-
-      // 3. Load TTS speed from SQLite KV
-      const savedSpeed = await kvGet<number>(KV_TTS_SPEED);
-      if (savedSpeed !== null && !isNaN(savedSpeed)) {
-        setTtsSpeed(savedSpeed);
-      }
-    };
-
-    bootstrap();
+    });
   }, []);
 
-  // ─────────────────────────────────────────────
-  // FOCUS EFFECT — restore session / handle navigation intents
-  // ─────────────────────────────────────────────
   useFocusEffect(
     useCallback(() => {
       const loadPendingActions = async () => {
         try {
-          // Read all pending actions in parallel from SQLite KV + AsyncStorage
-          const [
-            reviewData,
-            retakeData,
-            pendingWordRaw,
-            lastLearnedRaw,
-            lessonNavRaw,
-            // CURRENT_WORD_KEY stays in AsyncStorage (transient cross-screen intent)
-            wordDataRaw,
-          ] = await Promise.all([
-            kvGet<QuizHistoryEntry>(KV_QUIZ_REVIEW),
-            kvGet<QuizHistoryEntry>(KV_QUIZ_RETAKE),
-            kvGet<{ word: string; id: number; language: string; level: string }>(KV_PENDING_WORD),
-            kvGet<HistoryEntry>(KV_LAST_LEARNED),
-            kvGet<typeof lessonNav>(KV_LESSON_NAV),
-            AsyncStorage.getItem(CURRENT_WORD_KEY),
-          ]);
+          const [wordData, reviewData, retakeData, pendingWordRaw, lastLearnedRaw, lessonNavRaw] =
+            await Promise.all([
+              AsyncStorage.getItem(CURRENT_WORD_KEY),
+              AsyncStorage.getItem(CURRENT_REVIEW_KEY),
+              AsyncStorage.getItem(CURRENT_RETAKE_KEY),
+              AsyncStorage.getItem(PENDING_LESSON_WORD_KEY),
+              AsyncStorage.getItem(LAST_LEARNED_KEY),
+              AsyncStorage.getItem(LESSON_NAVIGATION_KEY),
+            ]);
 
-          if (lessonNavRaw) setLessonNav(lessonNavRaw);
+          if (lessonNavRaw) setLessonNav(JSON.parse(lessonNavRaw));
 
-          // ── 1. Quiz Review ────────────────────────────────────────────────
           if (reviewData) {
-            setQuizWindowData({
-              data: reviewData.quiz_data as QuizData,
-              words: reviewData.words,
-              mode: "review",
-              pastAnswers: reviewData.user_answers,
-            });
-            await kvDelete(KV_QUIZ_REVIEW);
+            const entry: QuizHistoryEntry = JSON.parse(reviewData);
+            setQuizWindowData({ data: entry.quiz_data, words: entry.words, mode: "review", pastAnswers: entry.user_answers });
+            await AsyncStorage.removeItem(CURRENT_REVIEW_KEY);
             return;
           }
 
-          // ── 2. Quiz Retake ────────────────────────────────────────────────
           if (retakeData) {
-            setQuizWindowData({
-              data: retakeData.quiz_data as QuizData,
-              words: retakeData.words,
-              mode: "take",
-            });
-            await kvDelete(KV_QUIZ_RETAKE);
+            const entry: QuizHistoryEntry = JSON.parse(retakeData);
+            setQuizWindowData({ data: entry.quiz_data, words: entry.words, mode: "take" });
+            await AsyncStorage.removeItem(CURRENT_RETAKE_KEY);
             return;
           }
 
-          // ── 3. Pending lesson word ────────────────────────────────────────
           if (pendingWordRaw) {
-            await kvDelete(KV_PENDING_WORD);
-            const pending = pendingWordRaw;
+            await AsyncStorage.removeItem(PENDING_LESSON_WORD_KEY);
+            const pending = JSON.parse(pendingWordRaw) as {
+              word: string; id: number; language: string; level: string;
+            };
             setWord(pending.word);
             setInputLang(pending.language);
 
-            // Try cache first
-            const cached = await loadWord(pending.word, pending.language, outputLang);
+            const raw = await AsyncStorage.getItem(HISTORY_KEY);
+            const arr: HistoryEntry[] = raw ? JSON.parse(raw) : [];
+            const cached = arr.find(
+              (e) => e.word === pending.word && e.input_lang === pending.language
+            );
+
             if (cached) {
-              const examples = prepareExamples(cached.data as LocalVocabData);
-              setCurrentData(cached.data as LocalVocabData);
+              const examples = prepareExamples(cached.data);
+              setCurrentData(cached.data);
               setAllExamples(examples);
               setExampleIndex(0);
               setTokenizeStatus({});
@@ -436,8 +410,8 @@ export default function VocabularyLearnerUI() {
               try {
                 const data = await learner.learnWord(pending.word, pending.language, outputLang, genMode);
                 if (!data.error) {
-                  const examples = prepareExamples(data as LocalVocabData);
-                  setCurrentData(data as LocalVocabData);
+                  const examples = prepareExamples(data);
+                  setCurrentData(data);
                   setAllExamples(examples);
                   setExampleIndex(0);
                   setTokenizeStatus({});
@@ -445,13 +419,11 @@ export default function VocabularyLearnerUI() {
                   setPracticeSuccess(0);
                   setStatus(`✅ Ready to learn '${pending.word}'!`);
                   if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
-                  await saveHistoryEntry({
-                    word: pending.word,
-                    input_lang: pending.language,
-                    output_lang: outputLang,
-                    timestamp: new Date().toISOString(),
-                    data: data as VocabData,
-                  });
+                  const entry: HistoryEntry = {
+                    word: pending.word, input_lang: pending.language, output_lang: outputLang,
+                    timestamp: new Date().toISOString(), data,
+                  };
+                  await saveHistoryEntry(entry);
                 }
               } catch {
                 setStatus("❌ Error loading word from Lessons.");
@@ -462,11 +434,10 @@ export default function VocabularyLearnerUI() {
             return;
           }
 
-          // ── 4. Cross-screen navigation intent (AsyncStorage, transient) ───
-          if (wordDataRaw) {
-            const entry: HistoryEntry = JSON.parse(wordDataRaw);
-            const examples = prepareExamples(entry.data as LocalVocabData);
-            setCurrentData(entry.data as LocalVocabData);
+          if (wordData) {
+            const entry: HistoryEntry = JSON.parse(wordData);
+            const examples = prepareExamples(entry.data);
+            setCurrentData(entry.data);
             setAllExamples(examples);
             setExampleIndex(0);
             setTokenizeStatus({});
@@ -480,11 +451,11 @@ export default function VocabularyLearnerUI() {
             return;
           }
 
-          // ── 5. Restore last session ───────────────────────────────────────
+          // Restore last session — chỉ khi không có data nào khác
           if (lastLearnedRaw && !hasDataRef.current) {
-            const entry = lastLearnedRaw;
-            const examples = prepareExamples(entry.data as LocalVocabData);
-            setCurrentData(entry.data as LocalVocabData);
+            const entry: HistoryEntry = JSON.parse(lastLearnedRaw);
+            const examples = prepareExamples(entry.data);
+            setCurrentData(entry.data);
             setAllExamples(examples);
             setExampleIndex(0);
             setTokenizeStatus({});
@@ -496,54 +467,62 @@ export default function VocabularyLearnerUI() {
             setStatus(`📂 Restored '${entry.word}' from last session`);
           }
         } catch (e) {
-          console.error("Error loading pending actions:", e);
+          console.error("Error loading pending history actions:", e);
         }
       };
 
       loadPendingActions();
-    }, []) // empty deps: only uses refs/setters
+    }, []) // empty deps: chỉ dùng refs/setters, không cần deps ngoài
   );
 
-  // ─────────────────────────────────────────────
-  // TTS SPEED CHANGE — persist to SQLite KV
-  // ─────────────────────────────────────────────
   const handleSpeedChange = useCallback(async (v: number) => {
     setTtsSpeed(v);
-    await kvSet(KV_TTS_SPEED, v);
+    await AsyncStorage.setItem(SPEED_KEY, String(v));
   }, []);
 
   // ─────────────────────────────────────────────
-  // TOKENIZE — parallel, patch back to SQLite
+  // TOKENIZE — parallel (Promise.allSettled), không side-effect trong setState
   // ─────────────────────────────────────────────
+  // Ref để track indices đang được tokenize → tránh duplicate API call khi parallel
   const tokenizingSet = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+
   const inflight = useRef<Set<string>>(new Set());
+
 
   useEffect(() => {
     if (allExamples.length === 0 || !currentData) return;
 
+    // Reset abort token và in-flight set mỗi khi word thay đổi
     tokenizeAbortRef.current = { cancelled: false };
     tokenizingSet.current = new Set();
     const abortToken = tokenizeAbortRef.current;
 
+    // Xác định các index cần tokenize (chưa có tokens)
     const pendingIndices = allExamples
       .map((ex, i) => (!ex.tokens || ex.tokens.length === 0 ? i : -1))
       .filter((i) => i !== -1);
 
     if (pendingIndices.length === 0) return;
 
+    // Mark tất cả là "loading" ngay lập tức (1 setState duy nhất)
     setTokenizeStatus((prev) => {
       const next = { ...prev };
       for (const i of pendingIndices) next[i] = "loading";
       return next;
     });
 
+    // Tạo promise cho từng index, chạy song song
     const tokenizeOne = async (i: number): Promise<{ i: number; tokens: string[] }> => {
-      if (tokenizingSet.current.has(i)) throw new Error(`skip:${i}`);
+      // Guard: đánh dấu đang xử lý để tránh double call
+      if (tokenizingSet.current.has(i)) {
+        throw new Error(`skip:${i}`);
+      }
       tokenizingSet.current.add(i);
+
       const tokens = await learner.tokenizeSentence(
         allExamples[i].sentence,
-        currentData.language?.input ?? inputLang
+        currentData.language.input ?? inputLang
       );
       return { i, tokens };
     };
@@ -551,17 +530,31 @@ export default function VocabularyLearnerUI() {
     Promise.allSettled(pendingIndices.map((i) => tokenizeOne(i))).then(async (results) => {
       if (abortToken.cancelled) return;
 
+      // Tổng hợp kết quả
       const successMap: Record<number, string[]> = {};
+      const failedIndices: number[] = [];
+
       for (const result of results) {
         if (result.status === "fulfilled") {
           successMap[result.value.i] = result.value.tokens;
+        } else {
+          const msg = String(result.reason?.message ?? "");
+          if (!msg.startsWith("skip:")) {
+            // Tìm lại index từ message nếu có, nếu không thì skip
+            const match = msg.match(/skip:(\d+)/);
+            if (!match) {
+              // Không biết index nào lỗi → bỏ qua (sẽ không update status)
+            }
+          }
         }
       }
+
+      if (abortToken.cancelled) return;
 
       const successIndices = Object.keys(successMap).map(Number);
       if (successIndices.length === 0) return;
 
-      // Update flat examples list
+      // Update allExamples — 1 setState duy nhất cho toàn bộ batch
       setAllExamples((prev) => {
         const copy = [...prev];
         for (const i of successIndices) {
@@ -572,13 +565,15 @@ export default function VocabularyLearnerUI() {
         return copy;
       });
 
+      // Update tokenizeStatus — 1 setState duy nhất
       setTokenizeStatus((prev) => {
         const next = { ...prev };
         for (const i of successIndices) next[i] = "done";
         return next;
       });
 
-      // Patch VocabData and persist to SQLite
+      // ─── Patch VocabData và persist vào AsyncStorage ───
+      // Đọc currentData một lần qua ref để tránh stale closure
       setCurrentData((prevData) => {
         if (!prevData) return prevData;
 
@@ -591,17 +586,34 @@ export default function VocabularyLearnerUI() {
           updatedData.examples = { ...updatedData.examples, [pos.diff]: bucket };
         }
 
-        // Persist async via updateExamples (lightweight, no full re-save)
+        // Persist async — ngoài setState để không vi phạm quy tắc pure updater
+        // Dùng setTimeout 0 để thoát khỏi render cycle
         const snapshot = updatedData;
         setTimeout(async () => {
           if (abortToken.cancelled) return;
           try {
-            await updateExamples(
-              snapshot.word,
-              snapshot.language?.input ?? inputLang,
-              outputLang,
-              snapshot.examples,
+            const raw = await AsyncStorage.getItem(HISTORY_KEY);
+            if (!raw) return;
+            const arr: HistoryEntry[] = JSON.parse(raw);
+            const idx = arr.findIndex(
+              (e) => e.word === snapshot.word && e.input_lang === snapshot.language.input
             );
+            if (idx === -1) return;
+            arr[idx] = { ...arr[idx], data: snapshot };
+            await Promise.all([
+              AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(arr)),
+              // Sync LAST_LEARNED_KEY nếu đây là từ đang học
+              AsyncStorage.getItem(LAST_LEARNED_KEY).then((lastRaw) => {
+                if (!lastRaw) return;
+                const last: HistoryEntry = JSON.parse(lastRaw);
+                if (last.word === snapshot.word && last.input_lang === snapshot.language.input) {
+                  return AsyncStorage.setItem(
+                    LAST_LEARNED_KEY,
+                    JSON.stringify({ ...arr[idx] })
+                  );
+                }
+              }),
+            ]);
           } catch (e) {
             console.warn("Tokenize persist error:", e);
           }
@@ -623,50 +635,50 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   const handleLearnWord = async () => {
     if (!word.trim()) { Alert.alert("Error", "Please enter a word."); return; }
-
+  
+    // ── Dedup key ──────────────────────────────────────────────────────────────
     const key = `learn:${word.trim()}:${inputLang}:${outputLang}`;
     if (inflight.current.has(key)) {
       setStatus(`⏳ Already fetching '${word.trim()}', please wait…`);
       return;
     }
     inflight.current.add(key);
-
-    // Clear lessonNav if user learns a different word manually
+    // ──────────────────────────────────────────────────────────────────────────
+  
+    // Clear lessonNav nếu user learn từ mới thủ công
     if (lessonNav) {
       const navWord = lessonNav.words[lessonNav.currentIndex]?.word;
       if (navWord !== word.trim()) {
         setLessonNav(null);
-        await kvDelete(KV_LESSON_NAV);
+        await AsyncStorage.removeItem(LESSON_NAVIGATION_KEY);
       }
     }
-
+  
     setLoading(true);
     setStatus(`🔄 Learning '${word}' (${genMode} mode)...`);
     try {
       const data = await learner.learnWord(word.trim(), inputLang, outputLang, genMode);
       if (data.error) { Alert.alert("API Error", data.error); setStatus("Error occurred."); return; }
-      const examples = prepareExamples(data as LocalVocabData);
-      setCurrentData(data as LocalVocabData);
+      const examples = prepareExamples(data);
+      setCurrentData(data);
       setAllExamples(examples);
       setExampleIndex(0);
       setTokenizeStatus({});
       setRomanizationVisible(false);
       setPracticeSuccess(0);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
-
-      await saveHistoryEntry({
-        word: word.trim(),
-        input_lang: inputLang,
-        output_lang: outputLang,
-        timestamp: new Date().toISOString(),
-        data: data as VocabData,
-      });
+  
+      const entry: HistoryEntry = {
+        word: word.trim(), input_lang: inputLang, output_lang: outputLang,
+        timestamp: new Date().toISOString(), data,
+      };
+      await saveHistoryEntry(entry);
     } catch (e: any) {
       Alert.alert("Error", e.message);
       setStatus("Error occurred.");
     } finally {
       setLoading(false);
-      inflight.current.delete(key);
+      inflight.current.delete(key); // ← luôn giải phóng dù lỗi hay thành công
     }
   };
 
@@ -683,17 +695,18 @@ export default function VocabularyLearnerUI() {
     const target = words[nextIndex];
     const newNav = { ...lessonNav, currentIndex: nextIndex };
     setLessonNav(newNav);
-    // Persist lesson nav to SQLite KV
-    await kvSet(KV_LESSON_NAV, newNav);
+    await AsyncStorage.setItem(LESSON_NAVIGATION_KEY, JSON.stringify(newNav));
 
     setWord(target.word);
     setInputLang(language);
 
-    const cached = await loadWord(target.word, language, outputLang);
+    const raw = await AsyncStorage.getItem(HISTORY_KEY);
+    const arr: HistoryEntry[] = raw ? JSON.parse(raw) : [];
+    const cached = arr.find((e) => e.word === target.word && e.input_lang === language);
 
     if (cached) {
-      const examples = prepareExamples(cached.data as LocalVocabData);
-      setCurrentData(cached.data as LocalVocabData);
+      const examples = prepareExamples(cached.data);
+      setCurrentData(cached.data);
       setAllExamples(examples);
       setExampleIndex(0);
       setTokenizeStatus({});
@@ -701,8 +714,8 @@ export default function VocabularyLearnerUI() {
       setPracticeSuccess(0);
       setOutputLang(cached.output_lang);
       setStatus(`⚡ [${level}] ${nextIndex + 1}/${words.length} — from cache`);
-      // Sync last_learned KV (saveWord updates it on every upsert)
-      await saveWord(cached.word, cached.input_lang, cached.output_lang, cached.data as VocabData, cached.timestamp);
+      // [FIX v6] Sync LAST_LEARNED_KEY khi navigate
+      await AsyncStorage.setItem(LAST_LEARNED_KEY, JSON.stringify(cached));
       await database.initDB();
       if (target.id) await database.setLearned(target.id, true);
     } else {
@@ -711,8 +724,8 @@ export default function VocabularyLearnerUI() {
       try {
         const data = await learner.learnWord(target.word, language, outputLang, genMode);
         if (!data.error) {
-          const examples = prepareExamples(data as LocalVocabData);
-          setCurrentData(data as LocalVocabData);
+          const examples = prepareExamples(data);
+          setCurrentData(data);
           setAllExamples(examples);
           setExampleIndex(0);
           setTokenizeStatus({});
@@ -721,13 +734,11 @@ export default function VocabularyLearnerUI() {
           setStatus(`✅ [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
           await database.initDB();
           if (target.id) await database.setLearned(target.id, true);
-          await saveHistoryEntry({
-            word: target.word,
-            input_lang: language,
-            output_lang: outputLang,
-            timestamp: new Date().toISOString(),
-            data: data as VocabData,
-          });
+          const entry: HistoryEntry = {
+            word: target.word, input_lang: language, output_lang: outputLang,
+            timestamp: new Date().toISOString(), data,
+          };
+          await saveHistoryEntry(entry); // [FIX v6] dùng helper, tự sync LAST_LEARNED
         }
       } catch {
         setStatus("❌ Error loading word.");
@@ -743,13 +754,17 @@ export default function VocabularyLearnerUI() {
   const currentExample = allExamples[exampleIndex] ?? null;
 
   const handleTokenPress = async (token: string) => {
+    // ── Dedup key ──────────────────────────────────────────────────────────────
     const key = `translate:${token}:${inputLang}:${outputLang}`;
     if (inflight.current.has(key)) {
+      // Đã có request đang chạy cho token này.
+      // Vẫn play TTS nhưng không gọi API dịch trùng.
       speakText(token, inputLang, ttsSpeed);
       return;
     }
     inflight.current.add(key);
-
+    // ──────────────────────────────────────────────────────────────────────────
+  
     speakText(token, inputLang, ttsSpeed);
     setTranslationPopup({ text: token, translation: "⏳ Translating..." });
     try {
@@ -763,7 +778,7 @@ export default function VocabularyLearnerUI() {
     } catch {
       setTranslationPopup({ text: token, translation: "❌ Translation failed." });
     } finally {
-      inflight.current.delete(key);
+      inflight.current.delete(key); // ← luôn giải phóng
     }
   };
 
@@ -772,14 +787,21 @@ export default function VocabularyLearnerUI() {
   }, [exampleIndex, currentData?.word]);
 
   // ─────────────────────────────────────────────
-  // QUIZ — filter by current language
+  // QUIZ — lọc theo ngôn ngữ hiện tại
   // ─────────────────────────────────────────────
   const handleGenerateQuiz = async () => {
-    const quizLang = currentData?.language?.input ?? inputLang;
-    // Load lightweight word list (no blobs) from SQLite
-    const wordList = await listWordsFull({ inputLang: quizLang, limit: 50 });
+    const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
+    const historyArray: HistoryEntry[] = currentHistory ? JSON.parse(currentHistory) : [];
 
-    if (wordList.length === 0) {
+    if (historyArray.length === 0) {
+      Alert.alert("Empty History", "Learn some words first!");
+      return;
+    }
+
+    const quizLang = currentData?.language?.input ?? inputLang;
+    const filteredByLang = historyArray.filter((e) => e.input_lang === quizLang);
+
+    if (filteredByLang.length === 0) {
       Alert.alert(
         "No Words Found",
         `You haven't learned any ${quizLang} words yet.\n\nLearn at least 1 ${quizLang} word before generating a quiz.`
@@ -787,30 +809,35 @@ export default function VocabularyLearnerUI() {
       return;
     }
 
-    setHistoryCount(wordList.length);
-    setQuizWordCount(Math.min(5, wordList.length));
+    setHistoryCount(filteredByLang.length);
+    setQuizWordCount(Math.min(5, filteredByLang.length));
     setQuizSetupVisible(true);
   };
 
   const startQuizGeneration = async () => {
     setQuizSetupVisible(false);
+    const currentHistory = await AsyncStorage.getItem(HISTORY_KEY);
+    const historyArray: HistoryEntry[] = currentHistory ? JSON.parse(currentHistory) : [];
+  
     const quizLang = currentData?.language?.input ?? inputLang;
-    const wordList = await listWordsFull({ inputLang: quizLang, limit: quizWordCount });
-
-    if (wordList.length === 0) {
+    const filteredByLang = historyArray.filter((e) => e.input_lang === quizLang);
+  
+    if (filteredByLang.length === 0) {
       Alert.alert("No Words Found", `No ${quizLang} words in history.`);
       return;
     }
-
-    const words = wordList.slice(0, quizWordCount).map((e) => e.word);
-
+  
+    const words = filteredByLang.slice(0, quizWordCount).map((e) => e.word);
+  
+    // ── Dedup key ──────────────────────────────────────────────────────────────
     const key = `quiz:${words.join("|")}:${quizQuestionCount}:${genMode}`;
     if (inflight.current.has(key)) {
       setStatus("⏳ Quiz đang được tạo, vui lòng chờ…");
       return;
     }
     inflight.current.add(key);
-
+    // ──────────────────────────────────────────────────────────────────────────
+  
     setQuizLoading(true);
     setStatus(`🔄 Generating ${quizQuestionCount}-question ${quizLang} quiz...`);
     try {
@@ -824,14 +851,14 @@ export default function VocabularyLearnerUI() {
     } finally {
       setQuizLoading(false);
       setStatus("Ready to learn!");
-      inflight.current.delete(key);
+      inflight.current.delete(key); // ← luôn giải phóng
     }
   };
+
 
   useEffect(() => {
     inflight.current.clear();
   }, [currentData?.word]);
-
   // ─────────────────────────────────────────────
   // RENDER HELPERS
   // ─────────────────────────────────────────────
@@ -847,7 +874,7 @@ export default function VocabularyLearnerUI() {
         </View>
       );
     }
-    const ov = currentData.overview as VocabOverview;
+    const ov = currentData.overview;
     return (
       <View>
         <OverviewRow icon="🎯" label="Meaning"        value={ov.meaning} />
@@ -937,7 +964,7 @@ export default function VocabularyLearnerUI() {
                   setWord(text);
                   if (lessonNav && text !== lessonNav.words[lessonNav.currentIndex]?.word) {
                     setLessonNav(null);
-                    kvDelete(KV_LESSON_NAV);
+                    AsyncStorage.removeItem(LESSON_NAVIGATION_KEY);
                   }
                 }}
               />
@@ -1176,11 +1203,9 @@ export default function VocabularyLearnerUI() {
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              // Infer input_lang from current context
-              await saveQuiz({
-                ...entry,
-                input_lang: currentData?.language?.input ?? inputLang,
-              });
+              const currentQuizHistory = await AsyncStorage.getItem(QUIZ_HISTORY_KEY);
+              const quizHistoryArray = currentQuizHistory ? JSON.parse(currentQuizHistory) : [];
+              await AsyncStorage.setItem(QUIZ_HISTORY_KEY, JSON.stringify([entry, ...quizHistoryArray]));
             } catch (e) {
               console.error("Error saving quiz history:", e);
             }
@@ -1192,7 +1217,7 @@ export default function VocabularyLearnerUI() {
 }
 
 // ─────────────────────────────────────────────
-// SUB-COMPONENTS  (unchanged from original)
+// SUB-COMPONENTS
 // ─────────────────────────────────────────────
 
 function ColoredInput({
@@ -1208,6 +1233,7 @@ function ColoredInput({
   onChangeText: (text: string) => void;
   autoFocus?: boolean;
 }) {
+  // Overlay hiển thị từng ký tự với màu đúng/sai
   const renderChars = () => {
     if (input.length === 0) return null;
     return (
@@ -1271,10 +1297,12 @@ const overlayStyle = StyleSheet.create({
     zIndex: 1,
     fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
   },
+  // Khi có nội dung, làm chữ TextInput trong suốt để overlay hiện lên
   inputTransparentText: {
     color: "transparent",
   },
 });
+
 
 function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
   if (!value || value === "N/A") return null;
@@ -1355,14 +1383,17 @@ function MemoryCheckModal({
               />
             </View>
 
+            {/* CHỈ hiện bản dịch — KHÔNG hiện câu gốc */}
             <Text style={styles.memCheckTranslation}>{current?.translation}</Text>
 
+            {/* Hint: chỉ show khi giữ nút, và chỉ show câu gốc */}
             {showHint && (
               <View style={[styles.typingTargetBox, { marginBottom: 12, borderColor: "#E67E22" }]}>
                 <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
               </View>
             )}
 
+            {/* Input với overlay màu từng ký tự */}
             <ColoredInput
               input={input}
               target={target}
@@ -1386,6 +1417,7 @@ function MemoryCheckModal({
     </Modal>
   );
 }
+
 
 // ── Typing Practice Modal ──
 function TypingPracticeModal({
@@ -1434,10 +1466,12 @@ function TypingPracticeModal({
             <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
           </View>
 
+          {/* Câu gốc hiện rõ để user nhìn mà gõ */}
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
 
+          {/* Input với overlay màu từng ký tự */}
           <ColoredInput
             input={input}
             target={target}
@@ -1487,7 +1521,7 @@ function QuizModal({
     setSubmitted(true);
     await onSaveResult({
       words, score: s, total: questions.length,
-      timestamp: new Date().toISOString(), quiz_data: quizData as any, user_answers: answers,
+      timestamp: new Date().toISOString(), quiz_data: quizData, user_answers: answers,
     });
     Alert.alert("Result", `You got ${s} out of ${questions.length} correct!`);
   };
@@ -1568,7 +1602,7 @@ function QuizModal({
 }
 
 // ─────────────────────────────────────────────
-// STYLES  (unchanged from original)
+// STYLES
 // ─────────────────────────────────────────────
 const { width } = Dimensions.get("window");
 
