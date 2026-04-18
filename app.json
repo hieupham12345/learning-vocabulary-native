@@ -2,6 +2,7 @@
   "expo": {
     "name": "Fast vocabulary",
     "slug": "vocab-app",
+    "owner": "nhoczit222",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -48,7 +49,7 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "4015a57d-3e1b-494c-bd62-c6821c55a323"
+        "projectId": "bd0ae2dd-8d08-4226-90c8-a15734e1399d"
       }
     }
   }

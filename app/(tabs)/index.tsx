@@ -1,17 +1,3 @@
-/**
- * VocabularyLearnerUI.tsx  —  v3 (Scale-optimized)
- *
- * Thay đổi vs v2:
- *  1. Restore session qua loadLastLearned() thay vì kvGet('last_learned')
- *     → không còn deserialize blob từ KV
- *  2. handleTokenPress persist kết quả dịch vào SQLite sau mỗi lần thành công
- *     → lần sau load lại từ, token đã được cache, không gọi API dịch lại
- *  3. startQuizGeneration dùng listWordNames() thay vì listWordsFull()
- *     → không load overview/examples/tokens để generate quiz
- *  4. Lesson nav: sync last_learned_ptr chỉ cập nhật pointer, không upsert lại blob
- *  5. Xoá kvDelete import (không dùng)
- */
-
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
@@ -1053,6 +1039,17 @@ function ColoredInput({ input, target, placeholder, onChangeText, autoFocus = fa
 }) {
   return (
     <View style={overlayStyle.wrapper}>
+      <TextInput
+        style={overlayStyle.input}
+        value={input}
+        onChangeText={onChangeText}
+        placeholder={placeholder ?? "Type here..."}
+        placeholderTextColor="#555"
+        multiline
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoFocus={autoFocus}
+      />
       {input.length > 0 && (
         <Text style={overlayStyle.text} pointerEvents="none">
           {input.split("").map((char, i) => (
@@ -1060,27 +1057,33 @@ function ColoredInput({ input, target, placeholder, onChangeText, autoFocus = fa
           ))}
         </Text>
       )}
-      <TextInput
-        style={[overlayStyle.input, input.length > 0 && overlayStyle.inputTransparentText]}
-        value={input}
-        onChangeText={onChangeText}
-        placeholder={input.length === 0 ? (placeholder ?? "Type here...") : ""}
-        placeholderTextColor="#555"
-        multiline
-        autoCapitalize="none"
-        autoCorrect={false}
-        autoFocus={autoFocus}
-      />
     </View>
   );
 }
 
 const overlayStyle = StyleSheet.create({
-  wrapper: { position: "relative", backgroundColor: "#1a1a1a", borderRadius: 8, borderWidth: 1, borderColor: "#333", minHeight: 60 },
-  text: { position: "absolute", top: 10, left: 10, right: 10, fontSize: 17, lineHeight: 24, zIndex: 2, flexWrap: "wrap", fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
-  input: { fontSize: 17, lineHeight: 24, padding: 10, color: "#fff", minHeight: 60, zIndex: 1, fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
-  inputTransparentText: { color: "transparent" },
+  wrapper: { backgroundColor: "#111", borderRadius: 10, borderWidth: 1, borderColor: "#333", justifyContent: "center", marginTop: 12, position: "relative" },
+  text: {
+    position: "absolute", top: 5, left: 0, right: 0, bottom: 0,
+    fontSize: 16, lineHeight: 22,
+    paddingTop: Platform.OS === "android" ? 12 : 14,
+    paddingHorizontal: 14,
+    zIndex: 2, flexWrap: "wrap",
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+  },
+  input: {
+    fontSize: 16, lineHeight: 22,
+    padding: 14,
+    paddingTop: Platform.OS === "android" ? 12 : 14,
+    color: "transparent",
+    minHeight: 60,
+    textAlignVertical: "top",
+    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
+    top: 5,
+  },
+  inputTransparentText: {},
 });
+
 
 function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
   if (!value || value === "N/A") return null;

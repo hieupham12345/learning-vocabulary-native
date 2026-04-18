@@ -1,22 +1,3 @@
-/**
- * exampleDB.ts  —  v3 (Scale-optimized)
- * ──────────────────────────────────────────────────────────────────────────
- * SQLite-backed storage layer cho Vocabulary Learner app.
- *
- * v3 thay đổi chính vs v2:
- *  1. last_learned lưu POINTER (word+langs) thay vì full VocabData blob
- *     → restore session không còn serialize/deserialize ~20KB JSON mỗi lần
- *  2. Thêm listWordNames() — chỉ SELECT cột `word`, dùng cho quiz generation
- *  3. updateTranslationCache() merge vào cache hiện có (không replace toàn bộ)
- *  4. Migration batch trong 1 transaction → nhanh hơn ~N lần với N từ cũ
- *  5. Thêm index trên cột `word` cho word lookup
- *  6. PRAGMA cache_size + synchronous NORMAL cho Android
- *  7. PRAGMA user_version để track schema, dễ migration tương lai
- *  8. listWords() trả HistoryMeta (không blob) — dùng cho UI list
- *
- * Dependencies: expo-sqlite >= 14 (new async API)
- */
-
 import * as SQLite from "expo-sqlite";
 
 // ─────────────────────────────────────────────
