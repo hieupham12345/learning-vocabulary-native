@@ -1,3 +1,17 @@
+/**
+ * VocabularyLearnerUI.tsx  —  v3 (Scale-optimized)
+ *
+ * Thay đổi vs v2:
+ *  1. Restore session qua loadLastLearned() thay vì kvGet('last_learned')
+ *     → không còn deserialize blob từ KV
+ *  2. handleTokenPress persist kết quả dịch vào SQLite sau mỗi lần thành công
+ *     → lần sau load lại từ, token đã được cache, không gọi API dịch lại
+ *  3. startQuizGeneration dùng listWordNames() thay vì listWordsFull()
+ *     → không load overview/examples/tokens để generate quiz
+ *  4. Lesson nav: sync last_learned_ptr chỉ cập nhật pointer, không upsert lại blob
+ *  5. Xoá kvDelete import (không dùng)
+ */
+
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
@@ -16,40 +30,37 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
-import * as Speech from 'expo-speech';
-import { useFocusEffect } from 'expo-router';
+import * as Speech from "expo-speech";
+import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 
-// ─── SQLite DB layer ──────────────────────────────────────────────────────────
 import {
   initDatabase,
+  migrateFromAsyncStorage,
   saveWord,
-  loadWord,
-  listWordsFull,
+  loadLastLearned,
+  loadWordByInputLang,
+  listWordNames,
+  countWords,
   updateExamples,
+  updateTranslationCache,
   saveQuiz,
   kvGet,
   kvSet,
-  kvDelete,
-  migrateFromAsyncStorage,
   type HistoryEntry,
-  type VocabData,
   type QuizHistoryEntry,
 } from "@/scripts/ExampleDB";
 
 // ─────────────────────────────────────────────
-// TTS LANGUAGE MAP
+// TTS
 // ─────────────────────────────────────────────
 const LANG_TO_TTS: Record<string, string> = {
-  Chinese:    "zh-CN",
-  English:    "en-US",
-  Japanese:   "ja-JP",
-  Vietnamese: "vi-VN",
-  Korean:     "ko-KR",
+  Chinese: "zh-CN", English: "en-US", Japanese: "ja-JP",
+  Vietnamese: "vi-VN", Korean: "ko-KR",
 };
 
-async function speakText(text: string, language: string, rate: number = 1.0): Promise<void> {
+async function speakText(text: string, language: string, rate = 1.0): Promise<void> {
   const langCode = LANG_TO_TTS[language] ?? "en-US";
   try {
     const isSpeaking = await Speech.isSpeakingAsync();
@@ -85,9 +96,9 @@ interface VocabOverview {
   collocations: string[];
 }
 
-// NOTE: VocabData & HistoryEntry & QuizHistoryEntry are imported from ExampleDB
-// Re-export local aliases for ergonomics
-type LocalVocabData = VocabData & {
+interface VocabDataLocal {
+  word: string;
+  language: { input: string; output: string };
   overview: VocabOverview;
   examples: {
     easy?: ExampleItem[];
@@ -95,7 +106,8 @@ type LocalVocabData = VocabData & {
     hard?: ExampleItem[];
     super_hard?: ExampleItem[];
   };
-};
+  translation_cache?: Record<string, string>;
+}
 
 interface QuizQuestion {
   difficulty: string;
@@ -111,30 +123,33 @@ interface QuizData {
   quiz: QuizQuestion[];
 }
 
+interface QuizHistoryEntryLocal {
+  words: string[];
+  score: number;
+  total: number;
+  timestamp: string;
+  quiz_data: QuizData;
+  user_answers: string[];
+  input_lang?: string;
+}
+
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
 const LANGUAGE_OPTIONS = ["Chinese", "English", "Japanese", "Vietnamese", "Korean"];
 const DIFFICULTY_COLORS: Record<string, string> = {
-  Easy:         "#2ECC71",
-  Medium:       "#F1C40F",
-  Hard:         "#E67E22",
-  "Super Hard": "#E74C3C",
+  Easy: "#2ECC71", Medium: "#F1C40F", Hard: "#E67E22", "Super Hard": "#E74C3C",
 };
 
-// Only CURRENT_WORD_KEY stays in AsyncStorage — it's a transient navigation intent
-// that must survive to the next screen focus even if app restarts. All history
-// and settings are now in SQLite via ExampleDB.
-const CURRENT_WORD_KEY   = "@current_word_data";
+// AsyncStorage chỉ dùng cho transient navigation (tồn tại qua 1-2 screen transition)
+const CURRENT_WORD_KEY        = "@current_word_data";
+const CURRENT_REVIEW_KEY      = "@current_quiz_review";
+const CURRENT_RETAKE_KEY      = "@current_quiz_retake";
+const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
+const LESSON_NAVIGATION_KEY   = "@lesson_navigation_context";
 
-// KV keys used with ExampleDB kvSet/kvGet
-const KV_LAST_LEARNED   = "last_learned";
-const KV_TTS_SPEED      = "tts_speed";
-const KV_LESSON_NAV     = "lesson_nav";
-const KV_PENDING_WORD   = "pending_word";
-const KV_QUIZ_REVIEW    = "quiz_review";
-const KV_QUIZ_RETAKE    = "quiz_retake";
-const KV_MIGRATED       = "migrated_from_async";
+// SQLite KV keys
+const KV_TTS_SPEED = "tts_speed";
 
 const SPEED_MIN  = 1.0;
 const SPEED_MAX  = 2.0;
@@ -145,16 +160,11 @@ const learner = new VocabularyLearner();
 // ─────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────
-
-/**
- * Flatten VocabData examples into a flat ExampleItem[], assigning difficulty_tag
- * from bucket name.
- */
-const prepareExamples = (data: LocalVocabData): ExampleItem[] => {
+const prepareExamples = (data: VocabDataLocal): ExampleItem[] => {
   const order = ["easy", "medium", "hard", "super_hard"] as const;
   const result: ExampleItem[] = [];
   for (const diff of order) {
-    (data.examples[diff] ?? []).forEach((ex: ExampleItem) => {
+    (data.examples[diff] ?? []).forEach((ex) => {
       result.push({
         ...ex,
         difficulty_tag: diff.replace("_", " ").replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -165,60 +175,26 @@ const prepareExamples = (data: LocalVocabData): ExampleItem[] => {
   return result;
 };
 
-/**
- * Map a flat index back to (bucketName, indexInBucket) in VocabData.examples.
- */
 const flatIndexToBucketPos = (
-  examples: LocalVocabData["examples"],
+  examples: VocabDataLocal["examples"],
   flatIndex: number
 ): { diff: "easy" | "medium" | "hard" | "super_hard"; j: number } | null => {
   const order = ["easy", "medium", "hard", "super_hard"] as const;
   let count = 0;
   for (const diff of order) {
     const bucket = examples[diff] ?? [];
-    if (flatIndex < count + bucket.length) {
-      return { diff, j: flatIndex - count };
-    }
+    if (flatIndex < count + bucket.length) return { diff, j: flatIndex - count };
     count += bucket.length;
   }
   return null;
 };
 
-/**
- * Save / upsert a word entry to SQLite and update the last_learned KV.
- * Drop-in replacement for the old saveHistoryEntry that used AsyncStorage.
- */
-const saveHistoryEntry = async (entry: HistoryEntry): Promise<void> => {
-  await saveWord(
-    entry.word,
-    entry.input_lang,
-    entry.output_lang,
-    entry.data as VocabData,
-    entry.timestamp,
-  );
-  // saveWord already writes last_learned KV inside ExampleDB.
-  // Nothing more needed here — kept for API compatibility.
-};
-
 // ─────────────────────────────────────────────
-// SPEED CONTROL COMPONENT
+// SPEED CONTROL
 // ─────────────────────────────────────────────
-function SpeedControl({
-  speed,
-  onSpeedChange,
-}: {
-  speed: number;
-  onSpeedChange: (v: number) => void;
-}) {
-  const dec = () => {
-    const next = Math.round((speed - SPEED_STEP) * 10) / 10;
-    if (next >= SPEED_MIN) onSpeedChange(next);
-  };
-  const inc = () => {
-    const next = Math.round((speed + SPEED_STEP) * 10) / 10;
-    if (next <= SPEED_MAX) onSpeedChange(next);
-  };
-
+function SpeedControl({ speed, onSpeedChange }: { speed: number; onSpeedChange: (v: number) => void }) {
+  const dec = () => { const n = Math.round((speed - SPEED_STEP) * 10) / 10; if (n >= SPEED_MIN) onSpeedChange(n); };
+  const inc = () => { const n = Math.round((speed + SPEED_STEP) * 10) / 10; if (n <= SPEED_MAX) onSpeedChange(n); };
   return (
     <View style={sc.row}>
       <Text style={sc.icon}>🐢</Text>
@@ -233,38 +209,16 @@ function SpeedControl({
     </View>
   );
 }
-
 const sc = StyleSheet.create({
-  row: {
-    flexDirection: "row", alignItems: "center", justifyContent: "center",
-    gap: 10, backgroundColor: "#0d1b2a", borderRadius: 10,
-    paddingVertical: 8, paddingHorizontal: 14, marginBottom: 10,
-  },
+  row: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "#0d1b2a", borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14, marginBottom: 10 },
   icon: { fontSize: 18 },
-  btn: {
-    backgroundColor: "#1a4a7a", borderRadius: 6,
-    paddingHorizontal: 14, paddingVertical: 4,
-  },
+  btn: { backgroundColor: "#1a4a7a", borderRadius: 6, paddingHorizontal: 14, paddingVertical: 4 },
   disabled: { opacity: 0.3 },
   btnText: { color: "#fff", fontSize: 20, fontWeight: "bold" },
-  value: {
-    color: "#2CC985", fontWeight: "bold", fontSize: 17,
-    minWidth: 48, textAlign: "center",
-  },
+  value: { color: "#2CC985", fontWeight: "bold", fontSize: 17, minWidth: 48, textAlign: "center" },
 });
 
-// ─────────────────────────────────────────────
-// TTS BUTTON — reusable
-// ─────────────────────────────────────────────
-function TTSButton({
-  onPress,
-  size = 20,
-  label,
-}: {
-  onPress: () => void;
-  size?: number;
-  label?: string;
-}) {
+function TTSButton({ onPress, size = 20, label }: { onPress: () => void; size?: number; label?: string }) {
   return (
     <TouchableOpacity style={styles.ttsBtn} onPress={onPress}>
       <Text style={[styles.ttsBtnText, { fontSize: size }]}>{label ?? "🔊"}</Text>
@@ -276,30 +230,29 @@ function TTSButton({
 // MAIN COMPONENT
 // ─────────────────────────────────────────────
 export default function VocabularyLearnerUI() {
-  // ── Input ──
   const [word, setWord]             = useState("");
   const [inputLang, setInputLang]   = useState("Chinese");
   const [outputLang, setOutputLang] = useState("Vietnamese");
   const [genMode, setGenMode]       = useState<"easy" | "hard">("easy");
 
-  // ── TTS Speed ──
+  const [dbReady, setDbReady]     = useState(false);
+  const [dbError, setDbError]     = useState(false);
+  const [migrating, setMigrating] = useState(false);
+
   const [ttsSpeed, setTtsSpeed] = useState(1.5);
 
-  // ── Learning ──
-  const [currentData, setCurrentData]                 = useState<LocalVocabData | null>(null);
-  const [allExamples, setAllExamples]                 = useState<ExampleItem[]>([]);
-  const [exampleIndex, setExampleIndex]               = useState(0);
+  const [currentData, setCurrentData]             = useState<VocabDataLocal | null>(null);
+  const [allExamples, setAllExamples]             = useState<ExampleItem[]>([]);
+  const [exampleIndex, setExampleIndex]           = useState(0);
   const [romanizationVisible, setRomanizationVisible] = useState(false);
-  const [practiceSuccess, setPracticeSuccess]         = useState(0);
+  const [practiceSuccess, setPracticeSuccess]     = useState(0);
   const [practiceModalVisible, setPracticeModalVisible] = useState(false);
-  const [loading, setLoading]                         = useState(false);
-  const [quizLoading, setQuizLoading]                 = useState(false);
-  const [status, setStatus]                           = useState("Ready to learn!");
+  const [loading, setLoading]                     = useState(false);
+  const [quizLoading, setQuizLoading]             = useState(false);
+  const [status, setStatus]                       = useState("Initializing database...");
 
-  // ── Tokenization status per exampleIndex ──
   const [tokenizeStatus, setTokenizeStatus] = useState<Record<number, "loading" | "done" | "error">>({});
 
-  // ── Modals ──
   const [langPickerVisible, setLangPickerVisible]   = useState(false);
   const [langPickerTarget, setLangPickerTarget]     = useState<"input" | "output">("input");
   const [memoryCheckVisible, setMemoryCheckVisible] = useState(false);
@@ -309,9 +262,9 @@ export default function VocabularyLearnerUI() {
   } | null>(null);
   const [translationPopup, setTranslationPopup] = useState<{ text: string; translation: string } | null>(null);
 
-  // ── Quiz setup ──
   const [quizWordCount, setQuizWordCount]         = useState(5);
   const [quizQuestionCount, setQuizQuestionCount] = useState(5);
+  const [historyCount, setHistoryCount]           = useState(0);
 
   const [lessonNav, setLessonNav] = useState<{
     words: Array<{ id: number; word: string; language: string; level: string }>;
@@ -320,158 +273,101 @@ export default function VocabularyLearnerUI() {
     level: string;
   } | null>(null);
 
-  const [historyCount, setHistoryCount] = useState(0);
+  const hasDataRef       = useRef(false);
+  const tokenizingSet    = useRef<Set<number>>(new Set());
+  const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const inflight         = useRef<Set<string>>(new Set());
 
-  // Ref to track synchronously whether currentData is loaded
-  // (avoids stale closure in useFocusEffect)
-  const hasDataRef = useRef(false);
-
-  useEffect(() => {
-    hasDataRef.current = currentData !== null;
-  }, [currentData]);
+  useEffect(() => { hasDataRef.current = currentData !== null; }, [currentData]);
 
   // ─────────────────────────────────────────────
-  // INIT — DB init + one-time migration + load TTS speed
+  // DB INIT + MIGRATION
   // ─────────────────────────────────────────────
   useEffect(() => {
+    let cancelled = false;
     const bootstrap = async () => {
-      // 1. Ensure SQLite schema is ready
-      await initDatabase();
+      try {
+        const ok = await initDatabase();
+        if (cancelled) return;
+        if (!ok) { setDbError(true); setStatus("❌ Database init failed."); return; }
 
-      // 2. One-time migration from AsyncStorage → SQLite
-      const alreadyMigrated = await kvGet<boolean>(KV_MIGRATED);
-      if (!alreadyMigrated) {
-        try {
-          const counts = await migrateFromAsyncStorage(AsyncStorage);
-          console.log(`[migrate] words=${counts.words} quizzes=${counts.quizzes}`);
-        } catch (e) {
-          console.warn("[migrate] error:", e);
+        const migDone = await kvGet<boolean>("migration_v1_done");
+        if (!migDone) {
+          if (!cancelled) { setMigrating(true); setStatus("⏳ Migrating to SQLite..."); }
+          await migrateFromAsyncStorage(AsyncStorage);
+          if (!cancelled) setMigrating(false);
         }
-        await kvSet(KV_MIGRATED, true);
-      }
 
-      // 3. Load TTS speed from SQLite KV
-      const savedSpeed = await kvGet<number>(KV_TTS_SPEED);
-      if (savedSpeed !== null && !isNaN(savedSpeed)) {
-        setTtsSpeed(savedSpeed);
+        if (cancelled) return;
+
+        const savedSpeed = await kvGet<number>(KV_TTS_SPEED);
+        if (!cancelled && savedSpeed && !isNaN(savedSpeed)) setTtsSpeed(savedSpeed);
+
+        if (!cancelled) { setDbReady(true); setStatus("Ready to learn!"); }
+      } catch (err) {
+        console.error("[bootstrap]", err);
+        if (!cancelled) { setDbError(true); setStatus("❌ Startup error."); }
       }
     };
-
     bootstrap();
+    return () => { cancelled = true; };
   }, []);
 
   // ─────────────────────────────────────────────
-  // FOCUS EFFECT — restore session / handle navigation intents
+  // FOCUS EFFECT
   // ─────────────────────────────────────────────
   useFocusEffect(
     useCallback(() => {
-      const loadPendingActions = async () => {
+      if (!dbReady) return;
+
+      const load = async () => {
         try {
-          // Read all pending actions in parallel from SQLite KV + AsyncStorage
-          const [
-            reviewData,
-            retakeData,
-            pendingWordRaw,
-            lastLearnedRaw,
-            lessonNavRaw,
-            // CURRENT_WORD_KEY stays in AsyncStorage (transient cross-screen intent)
-            wordDataRaw,
-          ] = await Promise.all([
-            kvGet<QuizHistoryEntry>(KV_QUIZ_REVIEW),
-            kvGet<QuizHistoryEntry>(KV_QUIZ_RETAKE),
-            kvGet<{ word: string; id: number; language: string; level: string }>(KV_PENDING_WORD),
-            kvGet<HistoryEntry>(KV_LAST_LEARNED),
-            kvGet<typeof lessonNav>(KV_LESSON_NAV),
-            AsyncStorage.getItem(CURRENT_WORD_KEY),
+          const [reviewData, retakeData, pendingWordRaw, lessonNavRaw] = await Promise.all([
+            AsyncStorage.getItem(CURRENT_REVIEW_KEY),
+            AsyncStorage.getItem(CURRENT_RETAKE_KEY),
+            AsyncStorage.getItem(PENDING_LESSON_WORD_KEY),
+            AsyncStorage.getItem(LESSON_NAVIGATION_KEY),
           ]);
 
-          if (lessonNavRaw) setLessonNav(lessonNavRaw);
+          if (lessonNavRaw) setLessonNav(JSON.parse(lessonNavRaw));
 
-          // ── 1. Quiz Review ────────────────────────────────────────────────
           if (reviewData) {
-            setQuizWindowData({
-              data: reviewData.quiz_data as QuizData,
-              words: reviewData.words,
-              mode: "review",
-              pastAnswers: reviewData.user_answers,
-            });
-            await kvDelete(KV_QUIZ_REVIEW);
+            const entry: QuizHistoryEntryLocal = JSON.parse(reviewData);
+            setQuizWindowData({ data: entry.quiz_data, words: entry.words, mode: "review", pastAnswers: entry.user_answers });
+            await AsyncStorage.removeItem(CURRENT_REVIEW_KEY);
             return;
           }
 
-          // ── 2. Quiz Retake ────────────────────────────────────────────────
           if (retakeData) {
-            setQuizWindowData({
-              data: retakeData.quiz_data as QuizData,
-              words: retakeData.words,
-              mode: "take",
-            });
-            await kvDelete(KV_QUIZ_RETAKE);
+            const entry: QuizHistoryEntryLocal = JSON.parse(retakeData);
+            setQuizWindowData({ data: entry.quiz_data, words: entry.words, mode: "take" });
+            await AsyncStorage.removeItem(CURRENT_RETAKE_KEY);
             return;
           }
 
-          // ── 3. Pending lesson word ────────────────────────────────────────
           if (pendingWordRaw) {
-            await kvDelete(KV_PENDING_WORD);
-            const pending = pendingWordRaw;
+            await AsyncStorage.removeItem(PENDING_LESSON_WORD_KEY);
+            const pending = JSON.parse(pendingWordRaw) as { word: string; id: number; language: string; level: string };
             setWord(pending.word);
             setInputLang(pending.language);
 
-            // Try cache first
-            const cached = await loadWord(pending.word, pending.language, outputLang);
+            const cached = await loadWordByInputLang(pending.word, pending.language);
             if (cached) {
-              const examples = prepareExamples(cached.data as LocalVocabData);
-              setCurrentData(cached.data as LocalVocabData);
-              setAllExamples(examples);
-              setExampleIndex(0);
-              setTokenizeStatus({});
-              setRomanizationVisible(false);
-              setPracticeSuccess(0);
-              setOutputLang(cached.output_lang);
-              setStatus(`⚡ Loaded '${pending.word}' from history cache`);
+              applyHistoryEntry(cached, "⚡");
+              setStatus(`⚡ Loaded '${pending.word}' from cache`);
               if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
             } else {
-              setStatus(`🔄 Auto-learning '${pending.word}' from Lessons...`);
-              setLoading(true);
-              try {
-                const data = await learner.learnWord(pending.word, pending.language, outputLang, genMode);
-                if (!data.error) {
-                  const examples = prepareExamples(data as LocalVocabData);
-                  setCurrentData(data as LocalVocabData);
-                  setAllExamples(examples);
-                  setExampleIndex(0);
-                  setTokenizeStatus({});
-                  setRomanizationVisible(false);
-                  setPracticeSuccess(0);
-                  setStatus(`✅ Ready to learn '${pending.word}'!`);
-                  if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
-                  await saveHistoryEntry({
-                    word: pending.word,
-                    input_lang: pending.language,
-                    output_lang: outputLang,
-                    timestamp: new Date().toISOString(),
-                    data: data as VocabData,
-                  });
-                }
-              } catch {
-                setStatus("❌ Error loading word from Lessons.");
-              } finally {
-                setLoading(false);
-              }
+              await fetchAndApplyWord(pending.word, pending.language, outputLang, async () => {
+                if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
+              });
             }
             return;
           }
 
-          // ── 4. Cross-screen navigation intent (AsyncStorage, transient) ───
-          if (wordDataRaw) {
-            const entry: HistoryEntry = JSON.parse(wordDataRaw);
-            const examples = prepareExamples(entry.data as LocalVocabData);
-            setCurrentData(entry.data as LocalVocabData);
-            setAllExamples(examples);
-            setExampleIndex(0);
-            setTokenizeStatus({});
-            setRomanizationVisible(false);
-            setPracticeSuccess(0);
+          const wordData = await AsyncStorage.getItem(CURRENT_WORD_KEY);
+          if (wordData) {
+            const entry: HistoryEntry = JSON.parse(wordData);
+            applyHistoryEntry(entry);
             setWord(entry.word);
             setInputLang(entry.input_lang);
             setOutputLang(entry.output_lang);
@@ -480,51 +376,86 @@ export default function VocabularyLearnerUI() {
             return;
           }
 
-          // ── 5. Restore last session ───────────────────────────────────────
-          if (lastLearnedRaw && !hasDataRef.current) {
-            const entry = lastLearnedRaw;
-            const examples = prepareExamples(entry.data as LocalVocabData);
-            setCurrentData(entry.data as LocalVocabData);
-            setAllExamples(examples);
-            setExampleIndex(0);
-            setTokenizeStatus({});
-            setRomanizationVisible(false);
-            setPracticeSuccess(0);
-            setWord(entry.word);
-            setInputLang(entry.input_lang);
-            setOutputLang(entry.output_lang);
-            setStatus(`📂 Restored '${entry.word}' from last session`);
+          // Restore last session — dùng pointer → query SQLite (không đọc blob từ KV)
+          if (!hasDataRef.current) {
+            const last = await loadLastLearned();
+            if (last) {
+              applyHistoryEntry(last);
+              setWord(last.word);
+              setInputLang(last.input_lang);
+              setOutputLang(last.output_lang);
+              setStatus(`📂 Restored '${last.word}' from last session`);
+            }
           }
         } catch (e) {
-          console.error("Error loading pending actions:", e);
+          console.error("[loadPendingActions]", e);
         }
       };
 
-      loadPendingActions();
-    }, []) // empty deps: only uses refs/setters
+      load();
+    }, [dbReady])
   );
 
+  // ── Helpers để apply HistoryEntry vào state ──────────────────────────────
+  const applyHistoryEntry = (entry: HistoryEntry, _prefix?: string) => {
+    const examples = prepareExamples(entry.data as any);
+    setCurrentData(entry.data as any);
+    setAllExamples(examples);
+    setExampleIndex(0);
+    setTokenizeStatus({});
+    setRomanizationVisible(false);
+    setPracticeSuccess(0);
+    if (entry.output_lang) setOutputLang(entry.output_lang);
+  };
+
+  const fetchAndApplyWord = async (
+    w: string,
+    iLang: string,
+    oLang: string,
+    onSuccess?: () => Promise<void>
+  ) => {
+    setLoading(true);
+    setStatus(`🔄 Learning '${w}'...`);
+    try {
+      const data = await learner.learnWord(w, iLang, oLang, genMode);
+      if (!data.error) {
+        const examples = prepareExamples(data);
+        setCurrentData(data);
+        setAllExamples(examples);
+        setExampleIndex(0);
+        setTokenizeStatus({});
+        setRomanizationVisible(false);
+        setPracticeSuccess(0);
+        setStatus(`✅ Ready to learn '${w}'!`);
+        await saveWord(w, iLang, oLang, data);
+        if (onSuccess) await onSuccess();
+      }
+    } catch (e: any) {
+      console.error("[fetchAndApplyWord]", e);
+      setStatus("❌ Error loading word.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // ─────────────────────────────────────────────
-  // TTS SPEED CHANGE — persist to SQLite KV
+  // SPEED
   // ─────────────────────────────────────────────
   const handleSpeedChange = useCallback(async (v: number) => {
     setTtsSpeed(v);
-    await kvSet(KV_TTS_SPEED, v);
+    try { await kvSet(KV_TTS_SPEED, v); }
+    catch (err) { console.warn("[handleSpeedChange]", err); }
   }, []);
 
   // ─────────────────────────────────────────────
-  // TOKENIZE — parallel, patch back to SQLite
+  // TOKENIZE — parallel, persist về SQLite
   // ─────────────────────────────────────────────
-  const tokenizingSet = useRef<Set<number>>(new Set());
-  const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
-  const inflight = useRef<Set<string>>(new Set());
-
   useEffect(() => {
     if (allExamples.length === 0 || !currentData) return;
 
     tokenizeAbortRef.current = { cancelled: false };
-    tokenizingSet.current = new Set();
-    const abortToken = tokenizeAbortRef.current;
+    tokenizingSet.current    = new Set();
+    const abortToken         = tokenizeAbortRef.current;
 
     const pendingIndices = allExamples
       .map((ex, i) => (!ex.tokens || ex.tokens.length === 0 ? i : -1))
@@ -543,7 +474,7 @@ export default function VocabularyLearnerUI() {
       tokenizingSet.current.add(i);
       const tokens = await learner.tokenizeSentence(
         allExamples[i].sentence,
-        currentData.language?.input ?? inputLang
+        currentData.language.input ?? inputLang
       );
       return { i, tokens };
     };
@@ -552,22 +483,18 @@ export default function VocabularyLearnerUI() {
       if (abortToken.cancelled) return;
 
       const successMap: Record<number, string[]> = {};
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          successMap[result.value.i] = result.value.tokens;
-        }
+      for (const r of results) {
+        if (r.status === "fulfilled") successMap[r.value.i] = r.value.tokens;
       }
 
       const successIndices = Object.keys(successMap).map(Number);
-      if (successIndices.length === 0) return;
+      if (successIndices.length === 0 || abortToken.cancelled) return;
 
-      // Update flat examples list
       setAllExamples((prev) => {
         const copy = [...prev];
         for (const i of successIndices) {
-          if (!copy[i].tokens || copy[i].tokens!.length === 0) {
+          if (!copy[i].tokens || copy[i].tokens!.length === 0)
             copy[i] = { ...copy[i], tokens: successMap[i] };
-          }
         }
         return copy;
       });
@@ -578,43 +505,35 @@ export default function VocabularyLearnerUI() {
         return next;
       });
 
-      // Patch VocabData and persist to SQLite
       setCurrentData((prevData) => {
         if (!prevData) return prevData;
-
-        let updatedData = { ...prevData, examples: { ...prevData.examples } };
+        let updated = { ...prevData, examples: { ...prevData.examples } };
         for (const i of successIndices) {
           const pos = flatIndexToBucketPos(prevData.examples, i);
           if (!pos) continue;
-          const bucket = [...(updatedData.examples[pos.diff] ?? [])];
+          const bucket = [...(updated.examples[pos.diff] ?? [])];
           bucket[pos.j] = { ...bucket[pos.j], tokens: successMap[i] };
-          updatedData.examples = { ...updatedData.examples, [pos.diff]: bucket };
+          updated.examples = { ...updated.examples, [pos.diff]: bucket };
         }
-
-        // Persist async via updateExamples (lightweight, no full re-save)
-        const snapshot = updatedData;
+        const snapshot = updated;
         setTimeout(async () => {
           if (abortToken.cancelled) return;
           try {
             await updateExamples(
               snapshot.word,
-              snapshot.language?.input ?? inputLang,
-              outputLang,
-              snapshot.examples,
+              snapshot.language.input,
+              snapshot.language.output,
+              snapshot.examples
             );
           } catch (e) {
-            console.warn("Tokenize persist error:", e);
+            console.warn("[tokenize persist]", e);
           }
         }, 0);
-
-        return updatedData;
+        return updated;
       });
     });
 
-    return () => {
-      abortToken.cancelled = true;
-      tokenizingSet.current.clear();
-    };
+    return () => { abortToken.cancelled = true; tokenizingSet.current.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExamples.length, currentData?.word]);
 
@@ -622,22 +541,16 @@ export default function VocabularyLearnerUI() {
   // LEARN WORD
   // ─────────────────────────────────────────────
   const handleLearnWord = async () => {
+    if (!dbReady) { Alert.alert("Not Ready", "Database is still initializing."); return; }
     if (!word.trim()) { Alert.alert("Error", "Please enter a word."); return; }
 
     const key = `learn:${word.trim()}:${inputLang}:${outputLang}`;
-    if (inflight.current.has(key)) {
-      setStatus(`⏳ Already fetching '${word.trim()}', please wait…`);
-      return;
-    }
+    if (inflight.current.has(key)) { setStatus(`⏳ Already fetching '${word.trim()}'…`); return; }
     inflight.current.add(key);
 
-    // Clear lessonNav if user learns a different word manually
-    if (lessonNav) {
-      const navWord = lessonNav.words[lessonNav.currentIndex]?.word;
-      if (navWord !== word.trim()) {
-        setLessonNav(null);
-        await kvDelete(KV_LESSON_NAV);
-      }
+    if (lessonNav && lessonNav.words[lessonNav.currentIndex]?.word !== word.trim()) {
+      setLessonNav(null);
+      AsyncStorage.removeItem(LESSON_NAVIGATION_KEY).catch(() => {});
     }
 
     setLoading(true);
@@ -645,24 +558,17 @@ export default function VocabularyLearnerUI() {
     try {
       const data = await learner.learnWord(word.trim(), inputLang, outputLang, genMode);
       if (data.error) { Alert.alert("API Error", data.error); setStatus("Error occurred."); return; }
-      const examples = prepareExamples(data as LocalVocabData);
-      setCurrentData(data as LocalVocabData);
+      const examples = prepareExamples(data);
+      setCurrentData(data);
       setAllExamples(examples);
       setExampleIndex(0);
       setTokenizeStatus({});
       setRomanizationVisible(false);
       setPracticeSuccess(0);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
-
-      await saveHistoryEntry({
-        word: word.trim(),
-        input_lang: inputLang,
-        output_lang: outputLang,
-        timestamp: new Date().toISOString(),
-        data: data as VocabData,
-      });
+      await saveWord(word.trim(), inputLang, outputLang, data);
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      Alert.alert("Error", e.message ?? "Unknown error");
       setStatus("Error occurred.");
     } finally {
       setLoading(false);
@@ -674,92 +580,102 @@ export default function VocabularyLearnerUI() {
   // LESSON NAVIGATION
   // ─────────────────────────────────────────────
   const navigateLesson = useCallback(async (direction: "prev" | "next") => {
-    if (!lessonNav) return;
+    if (!lessonNav || !dbReady) return;
     const { words, currentIndex, language, level } = lessonNav;
-
     const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
     if (nextIndex < 0 || nextIndex >= words.length) return;
 
     const target = words[nextIndex];
     const newNav = { ...lessonNav, currentIndex: nextIndex };
     setLessonNav(newNav);
-    // Persist lesson nav to SQLite KV
-    await kvSet(KV_LESSON_NAV, newNav);
+    await AsyncStorage.setItem(LESSON_NAVIGATION_KEY, JSON.stringify(newNav)).catch(() => {});
 
     setWord(target.word);
     setInputLang(language);
 
-    const cached = await loadWord(target.word, language, outputLang);
-
+    const cached = await loadWordByInputLang(target.word, language);
     if (cached) {
-      const examples = prepareExamples(cached.data as LocalVocabData);
-      setCurrentData(cached.data as LocalVocabData);
-      setAllExamples(examples);
-      setExampleIndex(0);
-      setTokenizeStatus({});
-      setRomanizationVisible(false);
-      setPracticeSuccess(0);
-      setOutputLang(cached.output_lang);
+      applyHistoryEntry(cached);
       setStatus(`⚡ [${level}] ${nextIndex + 1}/${words.length} — from cache`);
-      // Sync last_learned KV (saveWord updates it on every upsert)
-      await saveWord(cached.word, cached.input_lang, cached.output_lang, cached.data as VocabData, cached.timestamp);
-      await database.initDB();
-      if (target.id) await database.setLearned(target.id, true);
+      // Cập nhật pointer mà không phải upsert toàn bộ blob
+      try {
+        await kvSet("last_learned_ptr", {
+          word: cached.word, input_lang: cached.input_lang,
+          output_lang: cached.output_lang, learned_at: cached.timestamp,
+        });
+      } catch {}
+      if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
     } else {
       setLoading(true);
-      setStatus(`🔄 [${level}] ${nextIndex + 1}/${words.length} — loading '${target.word}'...`);
+      setStatus(`🔄 [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'...`);
       try {
         const data = await learner.learnWord(target.word, language, outputLang, genMode);
         if (!data.error) {
-          const examples = prepareExamples(data as LocalVocabData);
-          setCurrentData(data as LocalVocabData);
+          const examples = prepareExamples(data);
+          setCurrentData(data);
           setAllExamples(examples);
           setExampleIndex(0);
           setTokenizeStatus({});
           setRomanizationVisible(false);
           setPracticeSuccess(0);
           setStatus(`✅ [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
-          await database.initDB();
-          if (target.id) await database.setLearned(target.id, true);
-          await saveHistoryEntry({
-            word: target.word,
-            input_lang: language,
-            output_lang: outputLang,
-            timestamp: new Date().toISOString(),
-            data: data as VocabData,
-          });
+          if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
+          // saveWord() tự cập nhật last_learned_ptr
+          await saveWord(target.word, language, outputLang, data);
         }
-      } catch {
+      } catch (e) {
+        console.error("[navigateLesson]", e);
         setStatus("❌ Error loading word.");
       } finally {
         setLoading(false);
       }
     }
-  }, [lessonNav, outputLang, genMode]);
+  }, [lessonNav, outputLang, genMode, dbReady]);
 
   // ─────────────────────────────────────────────
-  // TRANSLATION POPUP
+  // TRANSLATION POPUP — persist cache sau mỗi lần dịch
   // ─────────────────────────────────────────────
   const currentExample = allExamples[exampleIndex] ?? null;
 
   const handleTokenPress = async (token: string) => {
     const key = `translate:${token}:${inputLang}:${outputLang}`;
-    if (inflight.current.has(key)) {
-      speakText(token, inputLang, ttsSpeed);
-      return;
-    }
+    if (inflight.current.has(key)) { speakText(token, inputLang, ttsSpeed); return; }
     inflight.current.add(key);
 
     speakText(token, inputLang, ttsSpeed);
+
+    // Kiểm tra trong-memory cache trước
+    const memCached = currentData?.translation_cache?.[token];
+    if (memCached) {
+      setTranslationPopup({ text: token, translation: memCached });
+      inflight.current.delete(key);
+      return;
+    }
+
     setTranslationPopup({ text: token, translation: "⏳ Translating..." });
     try {
       const result = await localDict.translateToken(
-        token,
-        inputLang,
-        outputLang,
+        token, inputLang, outputLang,
         () => learner.translateText(token, inputLang, outputLang)
       );
       setTranslationPopup({ text: token, translation: result });
+
+      // Cập nhật in-memory cache
+      setCurrentData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          translation_cache: { ...(prev.translation_cache ?? {}), [token]: result },
+        };
+      });
+
+      // Persist vào SQLite (fire and forget — không block UI)
+      if (currentData) {
+        updateTranslationCache(
+          currentData.word, currentData.language.input, currentData.language.output,
+          { [token]: result }
+        ).catch((e) => console.warn("[persist translation cache]", e));
+      }
     } catch {
       setTranslationPopup({ text: token, translation: "❌ Translation failed." });
     } finally {
@@ -767,70 +683,55 @@ export default function VocabularyLearnerUI() {
     }
   };
 
-  useEffect(() => {
-    setTranslationPopup(null);
-  }, [exampleIndex, currentData?.word]);
+  useEffect(() => { setTranslationPopup(null); }, [exampleIndex, currentData?.word]);
+  useEffect(() => { inflight.current.clear(); }, [currentData?.word]);
 
   // ─────────────────────────────────────────────
-  // QUIZ — filter by current language
+  // QUIZ
   // ─────────────────────────────────────────────
   const handleGenerateQuiz = async () => {
+    if (!dbReady) { Alert.alert("Not Ready", "Database is still initializing."); return; }
     const quizLang = currentData?.language?.input ?? inputLang;
-    // Load lightweight word list (no blobs) from SQLite
-    const wordList = await listWordsFull({ inputLang: quizLang, limit: 50 });
-
-    if (wordList.length === 0) {
-      Alert.alert(
-        "No Words Found",
-        `You haven't learned any ${quizLang} words yet.\n\nLearn at least 1 ${quizLang} word before generating a quiz.`
-      );
+    const count    = await countWords(quizLang);
+    if (count === 0) {
+      Alert.alert("No Words Found",
+        `You haven't learned any ${quizLang} words yet.\n\nLearn at least 1 word first.`);
       return;
     }
-
-    setHistoryCount(wordList.length);
-    setQuizWordCount(Math.min(5, wordList.length));
+    setHistoryCount(count);
+    setQuizWordCount(Math.min(5, count));
     setQuizSetupVisible(true);
   };
 
   const startQuizGeneration = async () => {
     setQuizSetupVisible(false);
     const quizLang = currentData?.language?.input ?? inputLang;
-    const wordList = await listWordsFull({ inputLang: quizLang, limit: quizWordCount });
 
-    if (wordList.length === 0) {
+    // Chỉ lấy danh sách tên từ — không load blob
+    const words = await listWordNames(quizLang, quizWordCount);
+    if (words.length === 0) {
       Alert.alert("No Words Found", `No ${quizLang} words in history.`);
       return;
     }
 
-    const words = wordList.slice(0, quizWordCount).map((e) => e.word);
-
     const key = `quiz:${words.join("|")}:${quizQuestionCount}:${genMode}`;
-    if (inflight.current.has(key)) {
-      setStatus("⏳ Quiz đang được tạo, vui lòng chờ…");
-      return;
-    }
+    if (inflight.current.has(key)) { setStatus("⏳ Quiz đang được tạo…"); return; }
     inflight.current.add(key);
 
     setQuizLoading(true);
     setStatus(`🔄 Generating ${quizQuestionCount}-question ${quizLang} quiz...`);
     try {
-      const data = await learner.generateQuiz(
-        words, quizLang, outputLang, quizQuestionCount, genMode
-      );
+      const data = await learner.generateQuiz(words, quizLang, outputLang, quizQuestionCount, genMode);
       if (data.error) { Alert.alert("Error", data.error); return; }
       setQuizWindowData({ data, words, mode: "take" });
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      Alert.alert("Error", e.message ?? "Unknown error");
     } finally {
       setQuizLoading(false);
       setStatus("Ready to learn!");
       inflight.current.delete(key);
     }
   };
-
-  useEffect(() => {
-    inflight.current.clear();
-  }, [currentData?.word]);
 
   // ─────────────────────────────────────────────
   // RENDER HELPERS
@@ -847,7 +748,7 @@ export default function VocabularyLearnerUI() {
         </View>
       );
     }
-    const ov = currentData.overview as VocabOverview;
+    const ov = currentData.overview;
     return (
       <View>
         <OverviewRow icon="🎯" label="Meaning"        value={ov.meaning} />
@@ -857,9 +758,11 @@ export default function VocabularyLearnerUI() {
         <View style={styles.rowWrap}>
           <Text style={styles.overviewKey}>🔗 Collocations: </Text>
           <View style={styles.collocRow}>
-            {ov.collocations.map((col, i) => (
+            {(ov.collocations ?? []).map((col, i) => (
               <TouchableOpacity key={i} onPress={() => handleTokenPress(col)}>
-                <Text style={styles.collocToken}>{col}{i < ov.collocations.length - 1 ? ", " : ""}</Text>
+                <Text style={styles.collocToken}>
+                  {col}{i < (ov.collocations?.length ?? 0) - 1 ? ", " : ""}
+                </Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -871,7 +774,7 @@ export default function VocabularyLearnerUI() {
   const renderSentenceTokens = () => {
     if (!currentExample) return null;
     const isTokenizing = tokenizeStatus[exampleIndex] === "loading";
-    const tokens = currentExample.tokens;
+    const tokens       = currentExample.tokens;
 
     if (!tokens && isTokenizing) {
       return (
@@ -898,6 +801,18 @@ export default function VocabularyLearnerUI() {
     );
   };
 
+  // ── DB error screen ──────────────────────────────────────────────────────
+  if (dbError) {
+    return (
+      <View style={[styles.root, { justifyContent: "center", alignItems: "center", padding: 30 }]}>
+        <Text style={{ color: "#E74C3C", fontSize: 18, textAlign: "center", marginBottom: 16 }}>❌ Database Error</Text>
+        <Text style={{ color: "#aaa", textAlign: "center", lineHeight: 22 }}>
+          Could not initialize the local database.{"\n"}Please restart the app.
+        </Text>
+      </View>
+    );
+  }
+
   // ─────────────────────────────────────────────
   // MAIN RENDER
   // ─────────────────────────────────────────────
@@ -907,16 +822,18 @@ export default function VocabularyLearnerUI() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
-        onTouchStart={() => {
-          if (translationPopup) setTranslationPopup(null);
-        }}
+        onTouchStart={() => { if (translationPopup) setTranslationPopup(null); }}
       >
-        {/* HEADER */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>🌟 Vocabulary Learning</Text>
+          {migrating && (
+            <View style={styles.migrationBanner}>
+              <ActivityIndicator size="small" color="#F1C40F" style={{ marginRight: 8 }} />
+              <Text style={styles.migrationText}>Migrating data to SQLite…</Text>
+            </View>
+          )}
         </View>
 
-        {/* INPUT CARD */}
         <View style={styles.card}>
           <View style={styles.wordInputRow}>
             <TouchableOpacity
@@ -926,7 +843,6 @@ export default function VocabularyLearnerUI() {
             >
               <Text style={styles.lessonNavArrowText}>◀</Text>
             </TouchableOpacity>
-
             <View style={{ flex: 1 }}>
               <TextInput
                 style={styles.wordInput}
@@ -937,9 +853,10 @@ export default function VocabularyLearnerUI() {
                   setWord(text);
                   if (lessonNav && text !== lessonNav.words[lessonNav.currentIndex]?.word) {
                     setLessonNav(null);
-                    kvDelete(KV_LESSON_NAV);
+                    AsyncStorage.removeItem(LESSON_NAVIGATION_KEY).catch(() => {});
                   }
                 }}
+                editable={dbReady}
               />
               {lessonNav && (
                 <Text style={styles.lessonNavHint}>
@@ -947,7 +864,6 @@ export default function VocabularyLearnerUI() {
                 </Text>
               )}
             </View>
-
             <TouchableOpacity
               style={[styles.lessonNavArrow, (!lessonNav || lessonNav.currentIndex >= lessonNav.words.length - 1) && styles.btnDisabled]}
               onPress={() => navigateLesson("next")}
@@ -985,26 +901,23 @@ export default function VocabularyLearnerUI() {
           </View>
 
           <View style={styles.actionRow}>
-            <TouchableOpacity style={[styles.btnPrimary, loading && styles.btnDisabled]} onPress={handleLearnWord} disabled={loading}>
+            <TouchableOpacity style={[styles.btnPrimary, (!dbReady || loading) && styles.btnDisabled]} onPress={handleLearnWord} disabled={!dbReady || loading}>
               {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.btnPrimaryText}>🎓 Learn Word</Text>}
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.btnQuiz, (loading || quizLoading) && styles.btnDisabled]} onPress={handleGenerateQuiz} disabled={loading || quizLoading}>
+            <TouchableOpacity style={[styles.btnQuiz, (!dbReady || loading || quizLoading) && styles.btnDisabled]} onPress={handleGenerateQuiz} disabled={!dbReady || loading || quizLoading}>
               {quizLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.btnPrimaryText}>📝 Quiz</Text>}
             </TouchableOpacity>
           </View>
           <Text style={styles.statusText}>{status}</Text>
         </View>
 
-        {/* LEARNING CARD */}
         {currentData && (
           <View style={styles.card}>
             <SpeedControl speed={ttsSpeed} onSpeedChange={handleSpeedChange} />
-
             <View style={styles.wordRow}>
               <Text style={styles.wordDisplay}>{currentData.word}</Text>
               <TTSButton onPress={() => speakText(currentData.word, inputLang, ttsSpeed)} size={28} />
             </View>
-
             <View style={styles.overviewBox}>{renderOverview()}</View>
 
             {currentExample && (
@@ -1016,29 +929,16 @@ export default function VocabularyLearnerUI() {
                       {currentExample.difficulty_tag}
                     </Text>
                   </Text>
-                  <TTSButton
-                    onPress={() => speakText(currentExample.sentence, inputLang, ttsSpeed)}
-                    size={17}
-                    label="🔊 Play"
-                  />
+                  <TTSButton onPress={() => speakText(currentExample.sentence, inputLang, ttsSpeed)} size={17} label="🔊 Play" />
                 </View>
-
                 <View style={styles.sentenceBox}>{renderSentenceTokens()}</View>
-
                 {translationPopup && (
-                  <View
-                    style={[styles.translationPopup, { maxHeight: 250 }]}
-                    onTouchStart={(e) => e.stopPropagation()}
-                  >
+                  <View style={[styles.translationPopup, { maxHeight: 250 }]} onTouchStart={(e) => e.stopPropagation()}>
                     <View style={styles.translationPopupHeader}>
                       <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
                       <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
                     </View>
-                    <ScrollView
-                      nestedScrollEnabled={true}
-                      style={{ marginVertical: 8 }}
-                      showsVerticalScrollIndicator={true}
-                    >
+                    <ScrollView nestedScrollEnabled style={{ marginVertical: 8 }} showsVerticalScrollIndicator>
                       <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
                     </ScrollView>
                     <TouchableOpacity onPress={() => setTranslationPopup(null)}>
@@ -1049,21 +949,12 @@ export default function VocabularyLearnerUI() {
               </View>
             )}
 
-            {/* Navigation */}
             <View style={styles.navRow}>
-              <TouchableOpacity
-                style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]}
-                onPress={() => setExampleIndex((i) => Math.max(0, i - 1))}
-                disabled={exampleIndex === 0}
-              >
+              <TouchableOpacity style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]} onPress={() => setExampleIndex((i) => Math.max(0, i - 1))} disabled={exampleIndex === 0}>
                 <Text style={styles.navBtnText}>⬅️ Prev</Text>
               </TouchableOpacity>
               <Text style={styles.counterText}>{exampleIndex + 1}/{allExamples.length}</Text>
-              <TouchableOpacity
-                style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]}
-                onPress={() => setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1))}
-                disabled={exampleIndex >= allExamples.length - 1}
-              >
+              <TouchableOpacity style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]} onPress={() => setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1))} disabled={exampleIndex >= allExamples.length - 1}>
                 <Text style={styles.navBtnText}>Next ➡️</Text>
               </TouchableOpacity>
             </View>
@@ -1083,9 +974,7 @@ export default function VocabularyLearnerUI() {
         )}
       </ScrollView>
 
-      {/* ═══════════════ MODALS ═══════════════ */}
-
-      {/* Language Picker */}
+      {/* MODALS */}
       <Modal visible={langPickerVisible} transparent animationType="slide">
         <Pressable style={styles.modalOverlay} onPress={() => setLangPickerVisible(false)}>
           <View style={styles.pickerSheet}>
@@ -1102,71 +991,41 @@ export default function VocabularyLearnerUI() {
         </Pressable>
       </Modal>
 
-      {/* Memory Check */}
       {memoryCheckVisible && (
-        <MemoryCheckModal
-          examples={allExamples}
-          inputLang={inputLang}
-          ttsSpeed={ttsSpeed}
-          onClose={() => setMemoryCheckVisible(false)}
-        />
+        <MemoryCheckModal examples={allExamples} inputLang={inputLang} ttsSpeed={ttsSpeed} onClose={() => setMemoryCheckVisible(false)} />
       )}
 
-      {/* Quiz Setup */}
       <Modal visible={quizSetupVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.quizSetupBox}>
             <Text style={styles.quizSetupTitle}>⚙️ Quiz Setup</Text>
             <View style={styles.quizLangBadge}>
-              <Text style={styles.quizLangBadgeText}>
-                🌐 Language: {currentData?.language?.input ?? inputLang}
-              </Text>
+              <Text style={styles.quizLangBadgeText}>🌐 Language: {currentData?.language?.input ?? inputLang}</Text>
             </View>
             <Text style={styles.setupLabel}>Recent words to test: {quizWordCount} / {historyCount}</Text>
             <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}>
-                <Text style={styles.stepperText}>−</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}><Text style={styles.stepperText}>−</Text></TouchableOpacity>
               <Text style={styles.stepperValue}>{quizWordCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.min(historyCount, n + 1))}>
-                <Text style={styles.stepperText}>+</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.min(historyCount, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
             </View>
             <Text style={styles.setupLabel}>Number of questions: {quizQuestionCount}</Text>
             <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}>
-                <Text style={styles.stepperText}>−</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}><Text style={styles.stepperText}>−</Text></TouchableOpacity>
               <Text style={styles.stepperValue}>{quizQuestionCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(10, n + 1))}>
-                <Text style={styles.stepperText}>+</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(10, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
             </View>
             <View style={styles.setupBtnRow}>
-              <TouchableOpacity style={styles.btnPrimary} onPress={startQuizGeneration}>
-                <Text style={styles.btnPrimaryText}>🚀 Generate Quiz</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.btnCancel} onPress={() => setQuizSetupVisible(false)}>
-                <Text style={styles.btnCancelText}>Cancel</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.btnPrimary} onPress={startQuizGeneration}><Text style={styles.btnPrimaryText}>🚀 Generate Quiz</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.btnCancel} onPress={() => setQuizSetupVisible(false)}><Text style={styles.btnCancelText}>Cancel</Text></TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* Typing Practice Modal */}
       {practiceModalVisible && (
-        <TypingPracticeModal
-          example={currentExample}
-          currentScore={practiceSuccess}
-          onClose={() => setPracticeModalVisible(false)}
-          onCorrect={() => setPracticeSuccess((n) => n + 1)}
-          inputLang={inputLang}
-          ttsSpeed={ttsSpeed}
-        />
+        <TypingPracticeModal example={currentExample} currentScore={practiceSuccess} onClose={() => setPracticeModalVisible(false)} onCorrect={() => setPracticeSuccess((n) => n + 1)} inputLang={inputLang} ttsSpeed={ttsSpeed} />
       )}
 
-      {/* Quiz Window */}
       {quizWindowData && (
         <QuizModal
           quizData={quizWindowData.data}
@@ -1176,14 +1035,8 @@ export default function VocabularyLearnerUI() {
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              // Infer input_lang from current context
-              await saveQuiz({
-                ...entry,
-                input_lang: currentData?.language?.input ?? inputLang,
-              });
-            } catch (e) {
-              console.error("Error saving quiz history:", e);
-            }
+              await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
+            } catch (e) { console.error("[QuizModal saveQuiz]", e); }
           }}
         />
       )}
@@ -1192,41 +1045,21 @@ export default function VocabularyLearnerUI() {
 }
 
 // ─────────────────────────────────────────────
-// SUB-COMPONENTS  (unchanged from original)
+// SUB-COMPONENTS
 // ─────────────────────────────────────────────
-
-function ColoredInput({
-  input,
-  target,
-  placeholder,
-  onChangeText,
-  autoFocus = false,
-}: {
-  input: string;
-  target: string;
-  placeholder?: string;
-  onChangeText: (text: string) => void;
-  autoFocus?: boolean;
+function ColoredInput({ input, target, placeholder, onChangeText, autoFocus = false }: {
+  input: string; target: string; placeholder?: string;
+  onChangeText: (t: string) => void; autoFocus?: boolean;
 }) {
-  const renderChars = () => {
-    if (input.length === 0) return null;
-    return (
-      <Text style={overlayStyle.text} pointerEvents="none">
-        {input.split("").map((char, i) => {
-          const correct = i < target.length && char === target[i];
-          return (
-            <Text key={i} style={{ color: correct ? "#2ECC71" : "#E74C3C" }}>
-              {char}
-            </Text>
-          );
-        })}
-      </Text>
-    );
-  };
-
   return (
     <View style={overlayStyle.wrapper}>
-      {renderChars()}
+      {input.length > 0 && (
+        <Text style={overlayStyle.text} pointerEvents="none">
+          {input.split("").map((char, i) => (
+            <Text key={i} style={{ color: i < target.length && char === target[i] ? "#2ECC71" : "#E74C3C" }}>{char}</Text>
+          ))}
+        </Text>
+      )}
       <TextInput
         style={[overlayStyle.input, input.length > 0 && overlayStyle.inputTransparentText]}
         value={input}
@@ -1243,37 +1076,10 @@ function ColoredInput({
 }
 
 const overlayStyle = StyleSheet.create({
-  wrapper: {
-    position: "relative",
-    backgroundColor: "#1a1a1a",
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#333",
-    minHeight: 60,
-  },
-  text: {
-    position: "absolute",
-    top: 10,
-    left: 10,
-    right: 10,
-    fontSize: 17,
-    lineHeight: 24,
-    zIndex: 2,
-    flexWrap: "wrap",
-    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
-  },
-  input: {
-    fontSize: 17,
-    lineHeight: 24,
-    padding: 10,
-    color: "#fff",
-    minHeight: 60,
-    zIndex: 1,
-    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
-  },
-  inputTransparentText: {
-    color: "transparent",
-  },
+  wrapper: { position: "relative", backgroundColor: "#1a1a1a", borderRadius: 8, borderWidth: 1, borderColor: "#333", minHeight: 60 },
+  text: { position: "absolute", top: 10, left: 10, right: 10, fontSize: 17, lineHeight: 24, zIndex: 2, flexWrap: "wrap", fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
+  input: { fontSize: 17, lineHeight: 24, padding: 10, color: "#fff", minHeight: 60, zIndex: 1, fontFamily: Platform.OS === "ios" ? "Courier" : "monospace" },
+  inputTransparentText: { color: "transparent" },
 });
 
 function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
@@ -1286,20 +1092,14 @@ function OverviewRow({ icon, label, value }: { icon: string; label: string; valu
   );
 }
 
-// ── Memory Check Modal ──
-function MemoryCheckModal({
-  examples, inputLang, ttsSpeed, onClose,
-}: {
-  examples: ExampleItem[];
-  inputLang: string;
-  ttsSpeed: number;
-  onClose: () => void;
+function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
+  examples: ExampleItem[]; inputLang: string; ttsSpeed: number; onClose: () => void;
 }) {
-  const [shuffled]        = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
-  const [idx, setIdx]     = useState(0);
+  const [shuffled]      = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
+  const [idx, setIdx]   = useState(0);
   const [input, setInput] = useState("");
   const [showHint, setShowHint] = useState(false);
-  const [done, setDone]   = useState(false);
+  const [done, setDone] = useState(false);
 
   const current = shuffled[idx];
   const target  = current?.sentence?.trim() ?? "";
@@ -1314,15 +1114,8 @@ function MemoryCheckModal({
     setInput(text);
     if (text === target && target.length > 0) {
       const next = idx + 1;
-      if (next >= shuffled.length) {
-        setDone(true);
-      } else {
-        setTimeout(() => {
-          setIdx(next);
-          setInput("");
-          setShowHint(false);
-        }, 500);
-      }
+      if (next >= shuffled.length) { setDone(true); }
+      else { setTimeout(() => { setIdx(next); setInput(""); setShowHint(false); }, 500); }
     }
   };
 
@@ -1331,52 +1124,29 @@ function MemoryCheckModal({
       <View style={styles.memCheckRoot}>
         <View style={styles.memCheckHeader}>
           <Text style={styles.memCheckTitle}>🧠 Memory Check</Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.memCheckClose}>✕</Text>
-          </TouchableOpacity>
+          <TouchableOpacity onPress={onClose}><Text style={styles.memCheckClose}>✕</Text></TouchableOpacity>
         </View>
-
         {done ? (
           <View style={styles.memCheckDone}>
             <Text style={styles.memCheckDoneText}>🎉 Amazing! You've recalled all examples!</Text>
-            <TouchableOpacity style={styles.btnPrimary} onPress={onClose}>
-              <Text style={styles.btnPrimaryText}>Close</Text>
-            </TouchableOpacity>
+            <TouchableOpacity style={styles.btnPrimary} onPress={onClose}><Text style={styles.btnPrimaryText}>Close</Text></TouchableOpacity>
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.memCheckBody}>
             <Text style={styles.memCheckProgress}>Progress: {idx + 1}/{shuffled.length}</Text>
-
             <View style={styles.memCheckTtsRow}>
               <Text style={styles.memCheckInstruction}>Translate back to the original language:</Text>
-              <TTSButton
-                onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)}
-                size={17} label="🔊 Replay"
-              />
+              <TTSButton onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
             </View>
-
             <Text style={styles.memCheckTranslation}>{current?.translation}</Text>
-
             {showHint && (
               <View style={[styles.typingTargetBox, { marginBottom: 12, borderColor: "#E67E22" }]}>
                 <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
               </View>
             )}
-
-            <ColoredInput
-              input={input}
-              target={target}
-              placeholder="Type here..."
-              onChangeText={handleChange}
-              autoFocus
-            />
-
+            <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleChange} autoFocus />
             <View style={styles.memCheckBtnRow}>
-              <TouchableOpacity
-                style={styles.hintBtn}
-                onPressIn={() => setShowHint(true)}
-                onPressOut={() => setShowHint(false)}
-              >
+              <TouchableOpacity style={styles.hintBtn} onPressIn={() => setShowHint(true)} onPressOut={() => setShowHint(false)}>
                 <Text style={styles.hintBtnText}>💡 Hold for Hint</Text>
               </TouchableOpacity>
             </View>
@@ -1387,16 +1157,9 @@ function MemoryCheckModal({
   );
 }
 
-// ── Typing Practice Modal ──
-function TypingPracticeModal({
-  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed,
-}: {
-  example: ExampleItem | null;
-  currentScore: number;
-  onClose: () => void;
-  onCorrect: () => void;
-  inputLang: string;
-  ttsSpeed: number;
+function TypingPracticeModal({ example, currentScore, onClose, onCorrect, inputLang, ttsSpeed }: {
+  example: ExampleItem | null; currentScore: number;
+  onClose: () => void; onCorrect: () => void; inputLang: string; ttsSpeed: number;
 }) {
   const [input, setInput]         = useState("");
   const [completed, setCompleted] = useState(false);
@@ -1404,8 +1167,8 @@ function TypingPracticeModal({
 
   useEffect(() => {
     if (!example?.sentence) return;
-    const timeout = setTimeout(() => speakText(example.sentence, inputLang, ttsSpeed), 350);
-    return () => clearTimeout(timeout);
+    const t = setTimeout(() => speakText(example.sentence, inputLang, ttsSpeed), 350);
+    return () => clearTimeout(t);
   }, [example?.sentence]);
 
   const handleChange = (text: string) => {
@@ -1422,36 +1185,23 @@ function TypingPracticeModal({
       <View style={styles.typingRoot}>
         <View style={styles.typingHeader}>
           <Text style={styles.typingTitle}>⌨️ Typing Practice</Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.memCheckClose}>✕</Text>
-          </TouchableOpacity>
+          <TouchableOpacity onPress={onClose}><Text style={styles.memCheckClose}>✕</Text></TouchableOpacity>
         </View>
         <ScrollView contentContainerStyle={styles.typingBody}>
           <Text style={styles.typingProgress}>Score: {currentScore}</Text>
-
           <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <Text style={styles.typingPrompt}>Type the sentence exactly:</Text>
             <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
           </View>
-
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
-
-          <ColoredInput
-            input={input}
-            target={target}
-            placeholder="Type here..."
-            onChangeText={handleChange}
-            autoFocus
-          />
-
+          <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleChange} autoFocus />
           {completed && (
             <View style={styles.typingSuccessBox}>
               <Text style={styles.typingSuccessText}>✅ Correct! Keep going.</Text>
             </View>
           )}
-
           <TouchableOpacity style={[styles.btnPrimary, { marginTop: 16 }]} onPress={onClose}>
             <Text style={styles.btnPrimaryText}>Close Practice</Text>
           </TouchableOpacity>
@@ -1461,14 +1211,11 @@ function TypingPracticeModal({
   );
 }
 
-// ── Quiz Modal ──
-function QuizModal({
-  quizData, words, mode, pastAnswers, onClose, onSaveResult,
-}: {
+function QuizModal({ quizData, words, mode, pastAnswers, onClose, onSaveResult }: {
   quizData: QuizData; words: string[]; mode: "take" | "review";
   pastAnswers?: string[];
   onClose: () => void;
-  onSaveResult: (entry: QuizHistoryEntry) => Promise<void>;
+  onSaveResult: (entry: QuizHistoryEntryLocal) => Promise<void>;
 }) {
   const questions = quizData.quiz ?? [];
   const [answers, setAnswers]     = useState<string[]>(pastAnswers ?? questions.map(() => ""));
@@ -1476,9 +1223,8 @@ function QuizModal({
   const [score, setScore]         = useState(0);
 
   useEffect(() => {
-    if (mode === "review") {
+    if (mode === "review")
       setScore(questions.reduce((acc, q, i) => acc + (pastAnswers?.[i] === q.answer ? 1 : 0), 0));
-    }
   }, []);
 
   const handleSubmit = async () => {
@@ -1487,7 +1233,7 @@ function QuizModal({
     setSubmitted(true);
     await onSaveResult({
       words, score: s, total: questions.length,
-      timestamp: new Date().toISOString(), quiz_data: quizData as any, user_answers: answers,
+      timestamp: new Date().toISOString(), quiz_data: quizData, user_answers: answers,
     });
     Alert.alert("Result", `You got ${s} out of ${questions.length} correct!`);
   };
@@ -1516,9 +1262,7 @@ function QuizModal({
                 submitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
                 submitted && isWrong   && { borderColor: "#E74C3C", borderWidth: 2 },
               ]}>
-                <Text style={[styles.quizQuestionText, { color: diffColor(q.difficulty) }]}>
-                  Q{i + 1}: {q.question}
-                </Text>
+                <Text style={[styles.quizQuestionText, { color: diffColor(q.difficulty) }]}>Q{i + 1}: {q.question}</Text>
                 {q.options.map((opt) => {
                   const val          = opt[0];
                   const isSelected   = userAns === val;
@@ -1527,23 +1271,14 @@ function QuizModal({
                   return (
                     <View key={val} style={styles.quizOptionWrapper}>
                       <TouchableOpacity
-                        style={[
-                          styles.quizOption,
-                          isSelected && !submitted && styles.quizOptionSelected,
-                          isCorrectOpt && styles.quizOptionCorrect,
-                          isWrongOpt   && styles.quizOptionWrong,
-                        ]}
+                        style={[styles.quizOption, isSelected && !submitted && styles.quizOptionSelected, isCorrectOpt && styles.quizOptionCorrect, isWrongOpt && styles.quizOptionWrong]}
                         onPress={() => { if (submitted) return; const u = [...answers]; u[i] = val; setAnswers(u); }}
                         disabled={submitted}
                       >
-                        <Text style={[
-                          styles.quizOptionText,
-                          isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" },
-                          isWrongOpt   && { color: "#E74C3C" },
-                        ]}>{opt}</Text>
+                        <Text style={[styles.quizOptionText, isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" }, isWrongOpt && { color: "#E74C3C" }]}>{opt}</Text>
                       </TouchableOpacity>
                       {submitted && isCorrectOpt && <Text style={styles.quizOptionMeta}>Correct answer</Text>}
-                      {submitted && isWrongOpt && <Text style={styles.quizOptionMeta}>Your answer</Text>}
+                      {submitted && isWrongOpt   && <Text style={styles.quizOptionMeta}>Your answer</Text>}
                     </View>
                   );
                 })}
@@ -1568,21 +1303,18 @@ function QuizModal({
 }
 
 // ─────────────────────────────────────────────
-// STYLES  (unchanged from original)
+// STYLES
 // ─────────────────────────────────────────────
 const { width } = Dimensions.get("window");
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#1a1a2e" },
   scroll: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 40 },
   header: { alignItems: "center", paddingVertical: 20 },
   headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
-  card: {
-    backgroundColor: "#16213e", borderRadius: 16, padding: 16, marginBottom: 16,
-    shadowColor: "#000", shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
-  },
+  migrationBanner: { flexDirection: "row", alignItems: "center", marginTop: 8, backgroundColor: "#0d1b2a", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
+  migrationText: { color: "#F1C40F", fontSize: 13 },
+  card: { backgroundColor: "#16213e", borderRadius: 16, padding: 16, marginBottom: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
   langRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
   langBlock: { flex: 1 },
   langLabel: { color: "#aaa", fontSize: 12, marginBottom: 4 },
@@ -1636,7 +1368,6 @@ const styles = StyleSheet.create({
   ctrlBtnMemory: { backgroundColor: "#7d3c1b" },
   ctrlBtnPractice: { backgroundColor: "#2d3f6f" },
   ctrlBtnText: { color: "#fff", fontSize: 14, fontWeight: "700", letterSpacing: 0.2, textAlign: "center" },
-  practiceInput: { backgroundColor: "#1a1a1a", color: "#fff", borderRadius: 8, padding: 10, fontSize: 17, borderWidth: 1, borderColor: "#333", minHeight: 60 },
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
   pickerSheet: { backgroundColor: "#16213e", borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
   pickerTitle: { color: "#F1C40F", fontSize: 18, fontWeight: "bold", marginBottom: 16, textAlign: "center" },
@@ -1651,7 +1382,6 @@ const styles = StyleSheet.create({
   memCheckTtsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
   memCheckInstruction: { color: "#aaa", fontSize: 14, flex: 1 },
   memCheckTranslation: { color: "#F1C40F", fontSize: 18, fontStyle: "italic", marginBottom: 16, lineHeight: 26 },
-  memCheckHint: { color: "#E67E22", fontSize: 16, fontWeight: "bold", marginBottom: 12, lineHeight: 24 },
   memCheckBtnRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   memCheckDone: { flex: 1, justifyContent: "center", alignItems: "center", padding: 30 },
   memCheckDoneText: { color: "#2ECC71", fontSize: 18, textAlign: "center", marginBottom: 30, lineHeight: 28 },

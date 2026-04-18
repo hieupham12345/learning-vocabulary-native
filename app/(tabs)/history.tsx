@@ -1,9 +1,10 @@
 /**
  * History.tsx
  * History tab for vocabulary learning and quiz history
+ * v2: Load data from SQLite via ExampleDB instead of AsyncStorage
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -15,38 +16,24 @@ import {
   Modal,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { VocabularyLearner } from "../../scripts/VocabularyLearner";
-import { localDict } from "../../scripts/LocalDictionary";
+import {
+  listWords,
+  listQuizzes,
+  clearWordHistory,
+  clearQuizHistory,
+  loadWord,
+  saveQuiz,
+  HistoryMeta,
+  QuizHistoryEntry,
+} from "@/scripts/ExampleDB";
 import { useRouter } from "expo-router";
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect } from "expo-router";
 
-interface HistoryEntry {
-  word: string;
-  input_lang: string;
-  output_lang: string;
-  timestamp: string;
-  data: any;
-}
-
-interface QuizHistoryEntry {
-  words: string[];
-  score: number;
-  total: number;
-  timestamp: string;
-  quiz_data: any;
-  user_answers: string[];
-}
-
-const HISTORY_KEY = "@vocab_history";
-const QUIZ_HISTORY_KEY = "@quiz_history";
-const CURRENT_REVIEW_KEY = "@current_quiz_review";
-const CURRENT_RETAKE_KEY = "@current_quiz_retake";
-
-const learner = new VocabularyLearner();
+const CURRENT_WORD_KEY = "@current_word_data";
 
 export default function HistoryScreen() {
   const router = useRouter();
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [history, setHistory] = useState<HistoryMeta[]>([]);
   const [quizHistory, setQuizHistory] = useState<QuizHistoryEntry[]>([]);
   const [activeTab, setActiveTab] = useState<"Words" | "Quizzes">("Words");
   const [quizModalVisible, setQuizModalVisible] = useState(false);
@@ -57,18 +44,20 @@ export default function HistoryScreen() {
   const [quizScore, setQuizScore] = useState(0);
 
   // ─────────────────────────────────────────────
-  // LOAD HISTORY
+  // LOAD HISTORY FROM SQLITE
   // ─────────────────────────────────────────────
   const loadHistory = useCallback(async () => {
     try {
-      const raw = await AsyncStorage.getItem(HISTORY_KEY);
-      if (raw) setHistory(JSON.parse(raw));
-      const rawQ = await AsyncStorage.getItem(QUIZ_HISTORY_KEY);
-      if (rawQ) {
-        const parsed = JSON.parse(rawQ);
-        setQuizHistory(parsed);
-      }
-    } catch (e) { console.error("loadHistory:", e); }
+      // listWords() trả HistoryMeta (không blob) — nhẹ, scale tốt
+      const words = await listWords({ limit: 100 });
+      setHistory(words);
+
+      // listQuizzes() load từ quiz_history table
+      const quizzes = await listQuizzes({ limit: 100 });
+      setQuizHistory(quizzes);
+    } catch (e) {
+      console.error("loadHistory:", e);
+    }
   }, []);
 
   useFocusEffect(
@@ -80,59 +69,64 @@ export default function HistoryScreen() {
   // ─────────────────────────────────────────────
   // CLEAR HISTORY
   // ─────────────────────────────────────────────
-// ─────────────────────────────────────────────
-  // CLEAR HISTORY
-  // ─────────────────────────────────────────────
-  const handleClearHistory = () => {
-    Alert.alert("Confirm", "Clear all history and dictionary cache?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Clear", style: "destructive", onPress: async () => {
-          // 1. Reset UI state
-          setHistory([]); 
+  const handleClearHistory = () => {
+    Alert.alert("Confirm", "Clear all history and dictionary cache?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clear",
+        style: "destructive",
+        onPress: async () => {
+          setHistory([]);
           setQuizHistory([]);
 
-          // 2. Clear all AsyncStorage keys simultaneously
-          await AsyncStorage.multiRemove([
-            HISTORY_KEY,
-            QUIZ_HISTORY_KEY,
-            CURRENT_REVIEW_KEY,
-            CURRENT_RETAKE_KEY,
-            "@current_word_data"
-          ]);
+          // Xoá SQLite tables
+          await clearWordHistory();
+          await clearQuizHistory();
 
-          // 3. Clear SQLite & Memory Cache
-          localDict.clearAllData();
+          // Xoá AsyncStorage key phụ
+          await AsyncStorage.removeItem(CURRENT_WORD_KEY);
 
-          Alert.alert("Success", "All history and cache cleared!");
-        },
-      },
-    ]);
-  };
-  // ─────────────────────────────────────────────
-  // LOAD WORD FROM HISTORY
-  // ─────────────────────────────────────────────
-  const loadWordFromHistory = (entry: HistoryEntry) => {
-    AsyncStorage.setItem("@current_word_data", JSON.stringify(entry)).then(() => {
-      router.replace("/");
-    });
+          Alert.alert("Success", "All history and cache cleared!");
+        },
+      },
+    ]);
   };
 
+  // ─────────────────────────────────────────────
+  // LOAD WORD FROM HISTORY
+  // Load đầy đủ HistoryEntry từ SQLite khi user nhấn vào word
+  // ─────────────────────────────────────────────
+  const loadWordFromHistory = async (entry: HistoryMeta) => {
+    try {
+      // Load full data từ SQLite (overview, examples, translation_cache)
+      const fullEntry = await loadWord(entry.word, entry.input_lang, entry.output_lang);
+      if (!fullEntry) {
+        Alert.alert("Error", "Could not load word data.");
+        return;
+      }
+      // Lưu vào AsyncStorage để index screen đọc (giữ nguyên contract cũ)
+      await AsyncStorage.setItem(CURRENT_WORD_KEY, JSON.stringify(fullEntry));
+      router.replace("/");
+    } catch (e) {
+      console.error("loadWordFromHistory:", e);
+      Alert.alert("Error", "Failed to load word.");
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // QUIZ MODAL HANDLERS
+  // ─────────────────────────────────────────────
   const openQuizModal = (entry: QuizHistoryEntry, mode: "review" | "retake") => {
     setActiveQuiz(entry);
     setQuizMode(mode);
-    setQuizAnswers(mode === "review" ? entry.user_answers : entry.quiz_data.quiz.map(() => ""));
+    setQuizAnswers(
+      mode === "review"
+        ? entry.user_answers
+        : entry.quiz_data.quiz.map(() => "")
+    );
     setQuizScore(mode === "review" ? entry.score : 0);
     setQuizSubmitted(mode === "review");
     setQuizModalVisible(true);
-  };
-
-  const handleReviewQuiz = (entry: QuizHistoryEntry) => {
-    openQuizModal(entry, "review");
-  };
-
-  const handleRetakeQuiz = (entry: QuizHistoryEntry) => {
-    openQuizModal(entry, "retake");
   };
 
   const handleQuizOptionPress = (questionIndex: number, optionLetter: string) => {
@@ -146,7 +140,11 @@ export default function HistoryScreen() {
 
   const handleSubmitRetake = async () => {
     if (!activeQuiz) return;
-    const score = activeQuiz.quiz_data.quiz.reduce((acc: number, q: any, i: number) => acc + (quizAnswers[i] === q.answer ? 1 : 0), 0);
+    const score = activeQuiz.quiz_data.quiz.reduce(
+      (acc: number, q: any, i: number) =>
+        acc + (quizAnswers[i] === q.answer ? 1 : 0),
+      0
+    );
     const newEntry: QuizHistoryEntry = {
       words: activeQuiz.words,
       score,
@@ -154,13 +152,13 @@ export default function HistoryScreen() {
       timestamp: new Date().toISOString(),
       quiz_data: activeQuiz.quiz_data,
       user_answers: quizAnswers,
+      input_lang: activeQuiz.input_lang ?? "",
     };
 
-    const currentQuizHistory = await AsyncStorage.getItem(QUIZ_HISTORY_KEY);
-    const quizHistoryArray = currentQuizHistory ? JSON.parse(currentQuizHistory) : [];
-    const updated = [newEntry, ...quizHistoryArray];
-    await AsyncStorage.setItem(QUIZ_HISTORY_KEY, JSON.stringify(updated));
-    setQuizHistory(updated);
+    // Lưu vào SQLite
+    await saveQuiz(newEntry);
+    // Cập nhật UI state
+    setQuizHistory((prev) => [newEntry, ...prev]);
     setQuizScore(score);
     setQuizSubmitted(true);
     Alert.alert("Retake Saved", `Saved new quiz result: ${score}/${newEntry.total}`);
@@ -179,16 +177,24 @@ export default function HistoryScreen() {
   // RENDER
   // ─────────────────────────────────────────────
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.containerContent} nestedScrollEnabled>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.containerContent}
+      nestedScrollEnabled
+    >
       <View style={styles.header}>
         <Text style={styles.headerTitle}>📚 History</Text>
       </View>
 
-      {/* TABS */}
       <View style={styles.card}>
+        {/* TABS */}
         <View style={styles.tabRow}>
           {(["Words", "Quizzes"] as const).map((tab) => (
-            <TouchableOpacity key={tab} style={[styles.tab, activeTab === tab && styles.tabActive]} onPress={() => setActiveTab(tab)}>
+            <TouchableOpacity
+              key={tab}
+              style={[styles.tab, activeTab === tab && styles.tabActive]}
+              onPress={() => setActiveTab(tab)}
+            >
               <Text style={[styles.tabText, activeTab === tab && styles.tabTextActive]}>
                 {tab === "Words" ? "📚 Words" : "📝 Quizzes"}
               </Text>
@@ -196,41 +202,71 @@ export default function HistoryScreen() {
           ))}
         </View>
 
+        {/* WORDS TAB */}
         {activeTab === "Words" && (
-          <ScrollView style={styles.historyList} contentContainerStyle={styles.historyListContent} nestedScrollEnabled>
-            {history.length === 0
-              ? <Text style={styles.emptyText}>No words learned yet.</Text>
-              : history.map((entry, i) => (
-                <TouchableOpacity key={i} style={styles.historyItem} onPress={() => loadWordFromHistory(entry)}>
+          <ScrollView
+            style={styles.historyList}
+            contentContainerStyle={styles.historyListContent}
+            nestedScrollEnabled
+          >
+            {history.length === 0 ? (
+              <Text style={styles.emptyText}>No words learned yet.</Text>
+            ) : (
+              history.map((entry, i) => (
+                <TouchableOpacity
+                  key={i}
+                  style={styles.historyItem}
+                  onPress={() => loadWordFromHistory(entry)}
+                >
                   <Text style={styles.historyWord}>{entry.word}</Text>
-                  <Text style={styles.historyLang}>{entry.input_lang} → {entry.output_lang}</Text>
+                  <Text style={styles.historyLang}>
+                    {entry.input_lang} → {entry.output_lang}
+                  </Text>
                 </TouchableOpacity>
               ))
-            }
+            )}
           </ScrollView>
         )}
 
+        {/* QUIZZES TAB */}
         {activeTab === "Quizzes" && (
-          <ScrollView style={styles.historyList} contentContainerStyle={styles.historyListContent} nestedScrollEnabled>
-            {quizHistory.length === 0
-              ? <Text style={styles.emptyText}>No quizzes taken yet.</Text>
-              : quizHistory.map((entry, i) => (
+          <ScrollView
+            style={styles.historyList}
+            contentContainerStyle={styles.historyListContent}
+            nestedScrollEnabled
+          >
+            {quizHistory.length === 0 ? (
+              <Text style={styles.emptyText}>No quizzes taken yet.</Text>
+            ) : (
+              quizHistory.map((entry, i) => (
                 <View key={i} style={styles.historyItem}>
                   <View style={styles.historyEntryText}>
-                    <Text style={styles.historyWord}>[{entry.score}/{entry.total}] {entry.words.slice(0, 3).join(", ")}{entry.words.length > 3 ? "…" : ""}</Text>
-                    <Text style={styles.historyLang}>{new Date(entry.timestamp).toLocaleDateString()}</Text>
+                    <Text style={styles.historyWord}>
+                      [{entry.score}/{entry.total}]{" "}
+                      {entry.words.slice(0, 3).join(", ")}
+                      {entry.words.length > 3 ? "…" : ""}
+                    </Text>
+                    <Text style={styles.historyLang}>
+                      {new Date(entry.timestamp).toLocaleDateString()}
+                    </Text>
                   </View>
                   <View style={styles.quizActionRow}>
-                    <TouchableOpacity style={[styles.quizActionBtn, styles.reviewBtn]} onPress={() => handleReviewQuiz(entry)}>
+                    <TouchableOpacity
+                      style={[styles.quizActionBtn, styles.reviewBtn]}
+                      onPress={() => openQuizModal(entry, "review")}
+                    >
                       <Text style={styles.quizActionBtnText}>Review</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={[styles.quizActionBtn, styles.retakeBtn]} onPress={() => handleRetakeQuiz(entry)}>
+                    <TouchableOpacity
+                      style={[styles.quizActionBtn, styles.retakeBtn]}
+                      onPress={() => openQuizModal(entry, "retake")}
+                    >
                       <Text style={styles.quizActionBtnText}>Retake</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
               ))
-            }
+            )}
           </ScrollView>
         )}
 
@@ -239,18 +275,21 @@ export default function HistoryScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* QUIZ MODAL */}
       {quizModalVisible && activeQuiz && (
         <Modal visible transparent animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.quizModalBox}>
               <View style={styles.quizHeader}>
                 <Text style={styles.quizModalTitle} numberOfLines={1}>
-                  {quizMode === "review" ? "🔍 Review Quiz" : "📝 Quiz"}: {activeQuiz.words.slice(0, 3).join(", ")}
+                  {quizMode === "review" ? "🔍 Review Quiz" : "📝 Quiz"}:{" "}
+                  {activeQuiz.words.slice(0, 3).join(", ")}
                 </Text>
                 <TouchableOpacity onPress={closeQuizModal}>
                   <Text style={styles.memCheckClose}>✕</Text>
                 </TouchableOpacity>
               </View>
+
               <ScrollView
                 style={styles.quizModalBody}
                 contentContainerStyle={styles.quizModalBodyContent}
@@ -262,17 +301,23 @@ export default function HistoryScreen() {
                   const isCorrect = quizSubmitted && userAns === question.answer;
                   const isWrong = quizSubmitted && userAns !== question.answer;
                   return (
-                    <View key={index} style={[
-                      styles.quizQuestionCard,
-                      quizSubmitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
-                      quizSubmitted && isWrong && { borderColor: "#E74C3C", borderWidth: 2 },
-                    ]}>
-                      <Text style={[styles.quizQuestionText, { color: "#F1C40F" }]}>Q{index + 1}: {question.question}</Text>
+                    <View
+                      key={index}
+                      style={[
+                        styles.quizQuestionCard,
+                        quizSubmitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
+                        quizSubmitted && isWrong && { borderColor: "#E74C3C", borderWidth: 2 },
+                      ]}
+                    >
+                      <Text style={[styles.quizQuestionText, { color: "#F1C40F" }]}>
+                        Q{index + 1}: {question.question}
+                      </Text>
                       {question.options.map((opt: string) => {
                         const letter = opt[0];
                         const isSelected = userAns === letter;
                         const isCorrectOpt = quizSubmitted && letter === question.answer;
-                        const isWrongOpt = quizSubmitted && isSelected && letter !== question.answer;
+                        const isWrongOpt =
+                          quizSubmitted && isSelected && letter !== question.answer;
                         return (
                           <View key={letter} style={styles.quizOptionWrapper}>
                             <TouchableOpacity
@@ -282,27 +327,38 @@ export default function HistoryScreen() {
                                 isCorrectOpt && styles.quizOptionCorrect,
                                 isWrongOpt && styles.quizOptionWrong,
                               ]}
-                              onPress={() => { if (quizSubmitted) return; handleQuizOptionPress(index, letter); }}
+                              onPress={() => handleQuizOptionPress(index, letter)}
                               disabled={quizSubmitted}
                             >
-                              <Text style={[
-                                styles.quizOptionText,
-                                isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" },
-                                isWrongOpt && { color: "#E74C3C" },
-                              ]}>{opt}</Text>
+                              <Text
+                                style={[
+                                  styles.quizOptionText,
+                                  isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" },
+                                  isWrongOpt && { color: "#E74C3C" },
+                                ]}
+                              >
+                                {opt}
+                              </Text>
                             </TouchableOpacity>
-                            {quizSubmitted && isCorrectOpt && <Text style={styles.quizOptionMeta}>Correct answer</Text>}
-                            {quizSubmitted && isWrongOpt && <Text style={styles.quizOptionMeta}>Your answer</Text>}
+                            {quizSubmitted && isCorrectOpt && (
+                              <Text style={styles.quizOptionMeta}>Correct answer</Text>
+                            )}
+                            {quizSubmitted && isWrongOpt && (
+                              <Text style={styles.quizOptionMeta}>Your answer</Text>
+                            )}
                           </View>
                         );
                       })}
                       {quizSubmitted && question.explanation && (
-                        <Text style={styles.quizExplanation}>💡 {question.explanation}</Text>
+                        <Text style={styles.quizExplanation}>
+                          💡 {question.explanation}
+                        </Text>
                       )}
                     </View>
                   );
                 })}
               </ScrollView>
+
               {!quizSubmitted && quizMode === "retake" && (
                 <TouchableOpacity style={styles.quizSubmitBtn} onPress={handleSubmitRetake}>
                   <Text style={styles.quizSubmitBtnText}>Submit Retake</Text>
@@ -310,7 +366,9 @@ export default function HistoryScreen() {
               )}
               {quizSubmitted && (
                 <View style={styles.quizScoreBar}>
-                  <Text style={styles.quizScoreText}>🎯 Score: {quizScore}/{activeQuiz.total}</Text>
+                  <Text style={styles.quizScoreText}>
+                    🎯 Score: {quizScore}/{activeQuiz.total}
+                  </Text>
                 </View>
               )}
               <TouchableOpacity style={styles.btnPrimary} onPress={closeQuizModal}>
@@ -325,7 +383,7 @@ export default function HistoryScreen() {
 }
 
 // ─────────────────────────────────────────────
-// STYLES
+// STYLES (giữ nguyên)
 // ─────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#1a1a2e" },
@@ -345,11 +403,8 @@ const styles = StyleSheet.create({
   historyList: { maxHeight: Dimensions.get("window").height * 0.55, marginBottom: 8 },
   historyListContent: { paddingBottom: 8 },
   historyItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: "#0a1628",
-    marginBottom: 8,
+    paddingVertical: 12, paddingHorizontal: 12,
+    borderRadius: 8, backgroundColor: "#0a1628", marginBottom: 8,
   },
   historyEntryText: { marginBottom: 10 },
   historyWord: { color: "#fff", fontSize: 15, fontWeight: "600" },
@@ -362,7 +417,10 @@ const styles = StyleSheet.create({
   emptyText: { color: "#555", textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
   clearBtn: { backgroundColor: "#922b21", borderRadius: 8, paddingVertical: 12, marginTop: 12, alignItems: "center" },
   clearBtnText: { color: "#fff", fontWeight: "bold" },
-  modalOverlay: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 16 },
+  modalOverlay: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 16,
+  },
   quizModalBox: { width: "100%", height: "90%", backgroundColor: "#16213e", borderRadius: 20, padding: 18, overflow: "hidden" },
   quizModalTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold", marginBottom: 12, textAlign: "center" },
   quizModalBodyWrapper: { flex: 1, width: "100%", marginBottom: 12 },
