@@ -45,3 +45,6 @@ app-example
 /android
 
 /scripts/config.ts
+
+npx expo prebuild
+npx eas build -p android --profile preview

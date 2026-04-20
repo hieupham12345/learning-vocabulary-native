@@ -259,6 +259,8 @@ export default function VocabularyLearnerUI() {
     level: string;
   } | null>(null);
 
+  const [refreshKey, setRefreshKey] = useState(0);
+
   const hasDataRef       = useRef(false);
   const tokenizingSet    = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
@@ -387,6 +389,7 @@ export default function VocabularyLearnerUI() {
     const examples = prepareExamples(entry.data as any);
     setCurrentData(entry.data as any);
     setAllExamples(examples);
+    setRefreshKey(k => k + 1);
     setExampleIndex(0);
     setTokenizeStatus({});
     setRomanizationVisible(false);
@@ -408,6 +411,7 @@ export default function VocabularyLearnerUI() {
         const examples = prepareExamples(data);
         setCurrentData(data);
         setAllExamples(examples);
+        setRefreshKey(k => k + 1);
         setExampleIndex(0);
         setTokenizeStatus({});
         setRomanizationVisible(false);
@@ -521,8 +525,7 @@ export default function VocabularyLearnerUI() {
 
     return () => { abortToken.cancelled = true; tokenizingSet.current.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allExamples.length, currentData?.word]);
-
+  }, [allExamples.length, currentData?.word, refreshKey]);
   // ─────────────────────────────────────────────
   // LEARN WORD
   // ─────────────────────────────────────────────
@@ -544,14 +547,15 @@ export default function VocabularyLearnerUI() {
     try {
       const data = await learner.learnWord(word.trim(), inputLang, outputLang, genMode);
       if (data.error) { Alert.alert("API Error", data.error); setStatus("Error occurred."); return; }
-      const examples = prepareExamples(data);
-      setCurrentData(data);
-      setAllExamples(examples);
-      setExampleIndex(0);
-      setTokenizeStatus({});
-      setRomanizationVisible(false);
-      setPracticeSuccess(0);
-      setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
+        const examples = prepareExamples(data);
+        setCurrentData(data);
+        setAllExamples(examples);
+        setRefreshKey(k => k + 1);
+        setExampleIndex(0);
+        setTokenizeStatus({});
+        setRomanizationVisible(false);
+        setPracticeSuccess(0);
+        setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
       await saveWord(word.trim(), inputLang, outputLang, data);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Unknown error");
@@ -600,6 +604,7 @@ export default function VocabularyLearnerUI() {
           const examples = prepareExamples(data);
           setCurrentData(data);
           setAllExamples(examples);
+          setRefreshKey(k => k + 1);
           setExampleIndex(0);
           setTokenizeStatus({});
           setRomanizationVisible(false);
