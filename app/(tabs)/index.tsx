@@ -1132,7 +1132,9 @@ function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
         {done ? (
           <View style={styles.memCheckDone}>
             <Text style={styles.memCheckDoneText}>🎉 Amazing! You've recalled all examples!</Text>
-            <TouchableOpacity style={styles.btnPrimary} onPress={onClose}><Text style={styles.btnPrimaryText}>Close</Text></TouchableOpacity>
+            <TouchableOpacity style={[styles.btnPrimary, { flex: 0, paddingHorizontal: 40 }]} onPress={onClose}>
+              <Text style={styles.btnPrimaryText}>Close</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.memCheckBody}>
