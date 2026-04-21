@@ -32,6 +32,8 @@ import {
   updateExamples,
   updateTranslationCache,
   saveQuiz,
+  saveQuizExplanation,
+  loadQuizExplanations,
   kvGet,
   kvSet,
   type HistoryEntry,
@@ -110,6 +112,7 @@ interface QuizData {
 }
 
 interface QuizHistoryEntryLocal {
+  id?: number;
   words: string[];
   score: number;
   total: number;
@@ -244,7 +247,7 @@ export default function VocabularyLearnerUI() {
   const [memoryCheckVisible, setMemoryCheckVisible] = useState(false);
   const [quizSetupVisible, setQuizSetupVisible]     = useState(false);
   const [quizWindowData, setQuizWindowData]         = useState<{
-    data: QuizData; words: string[]; mode: "take" | "review"; pastAnswers?: string[];
+    data: QuizData; words: string[]; mode: "take" | "review"; pastAnswers?: string[]; quizId?: number;
   } | null>(null);
   const [translationPopup, setTranslationPopup] = useState<{ text: string; translation: string } | null>(null);
 
@@ -1003,7 +1006,7 @@ export default function VocabularyLearnerUI() {
             <View style={styles.stepperRow}>
               <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}><Text style={styles.stepperText}>−</Text></TouchableOpacity>
               <Text style={styles.stepperValue}>{quizQuestionCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(10, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(30, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
             </View>
             <View style={styles.setupBtnRow}>
               <TouchableOpacity style={styles.btnPrimary} onPress={startQuizGeneration}><Text style={styles.btnPrimaryText}>🚀 Generate Quiz</Text></TouchableOpacity>
@@ -1023,12 +1026,19 @@ export default function VocabularyLearnerUI() {
           words={quizWindowData.words}
           mode={quizWindowData.mode}
           pastAnswers={quizWindowData.pastAnswers}
+          quizId={quizWindowData.quizId}
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
-            } catch (e) { console.error("[QuizModal saveQuiz]", e); }
+              const saved = await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
+              return saved;
+            } catch (e) {
+              console.error("[QuizModal saveQuiz]", e);
+              return undefined;
+            }
           }}
+          inputLang={currentData?.language?.input ?? inputLang}
+          outputLang={currentData?.language?.output ?? outputLang}
         />
       )}
     </KeyboardAvoidingView>
@@ -1221,31 +1231,67 @@ function TypingPracticeModal({ example, currentScore, onClose, onCorrect, inputL
   );
 }
 
-function QuizModal({ quizData, words, mode, pastAnswers, onClose, onSaveResult }: {
+function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSaveResult, inputLang, outputLang }: {
   quizData: QuizData; words: string[]; mode: "take" | "review";
   pastAnswers?: string[];
+  quizId?: number;
   onClose: () => void;
-  onSaveResult: (entry: QuizHistoryEntryLocal) => Promise<void>;
+  onSaveResult: (entry: QuizHistoryEntryLocal) => Promise<number | undefined>;
+  inputLang: string;
+  outputLang: string;
 }) {
   const questions = quizData.quiz ?? [];
-  const [answers, setAnswers]     = useState<string[]>(pastAnswers ?? questions.map(() => ""));
+  const [answers, setAnswers]   = useState<string[]>(pastAnswers ?? questions.map(() => ""));
   const [submitted, setSubmitted] = useState(mode === "review");
-  const [score, setScore]         = useState(0);
+  const [score, setScore]       = useState(0);
+  const [savedQuizId, setSavedQuizId] = useState<number | undefined>(quizId);
+
+  // explanations[i] = text đã load/fetch, null = chưa có, "loading" = đang fetch
+  const [explanations, setExplanations] = useState<Record<number, string | "loading">>({});
 
   useEffect(() => {
-    if (mode === "review")
+    if (mode === "review") {
       setScore(questions.reduce((acc, q, i) => acc + (pastAnswers?.[i] === q.answer ? 1 : 0), 0));
+    }
   }, []);
+
+  // Load cached explanations khi có quizId (review từ history)
+  useEffect(() => {
+    if (!savedQuizId) return;
+    loadQuizExplanations(savedQuizId).then((cached) => {
+      if (Object.keys(cached).length > 0) setExplanations(cached);
+    }).catch(() => {});
+  }, [savedQuizId]);
 
   const handleSubmit = async () => {
     const s = questions.reduce((acc, q, i) => acc + (answers[i] === q.answer ? 1 : 0), 0);
     setScore(s);
     setSubmitted(true);
-    await onSaveResult({
+    const newId = await onSaveResult({
       words, score: s, total: questions.length,
       timestamp: new Date().toISOString(), quiz_data: quizData, user_answers: answers,
     });
+    if (newId !== undefined) setSavedQuizId(newId);
     Alert.alert("Result", `You got ${s} out of ${questions.length} correct!`);
+  };
+
+  const handleExplain = async (i: number) => {
+    if (explanations[i] && explanations[i] !== "loading") return;
+    setExplanations(prev => ({ ...prev, [i]: "loading" }));
+    const q = questions[i];
+    try {
+      const text = await learner.explainQuizQuestion(
+        q.question, q.options, q.answer,
+        (q as any).word_tested ?? "", inputLang, outputLang
+      );
+      setExplanations(prev => ({ ...prev, [i]: text }));
+      // Persist nếu đã có quizId
+      if (savedQuizId !== undefined) {
+        saveQuizExplanation(savedQuizId, i, text).catch(() => {});
+      }
+    } catch (e: any) {
+      setExplanations(prev => ({ ...prev, [i]: `❌ ${e.message}` }));
+    }
   };
 
   const isReview = mode === "review";
@@ -1266,6 +1312,7 @@ function QuizModal({ quizData, words, mode, pastAnswers, onClose, onSaveResult }
             const userAns   = answers[i];
             const isCorrect = submitted && userAns === q.answer;
             const isWrong   = submitted && userAns !== q.answer;
+            const expState  = explanations[i];
             return (
               <View key={i} style={[
                 styles.quizQuestionCard,
@@ -1292,7 +1339,27 @@ function QuizModal({ quizData, words, mode, pastAnswers, onClose, onSaveResult }
                     </View>
                   );
                 })}
-                {submitted && <Text style={styles.quizExplanation}>💡 {q.explanation}</Text>}
+                {submitted && (
+                  <View style={{ marginTop: 10 }}>
+                    {!expState ? (
+                      <TouchableOpacity
+                        style={styles.explainBtn}
+                        onPress={() => handleExplain(i)}
+                      >
+                        <Text style={styles.explainBtnText}>💬 Explain</Text>
+                      </TouchableOpacity>
+                    ) : expState === "loading" ? (
+                      <View style={styles.explainLoading}>
+                        <ActivityIndicator size="small" color="#F39C12" />
+                        <Text style={styles.explainLoadingText}> Generating explanation…</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.quizExplanationBox}>
+                        <Text style={styles.quizExplanation}>{expState}</Text>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
             );
           })}
@@ -1311,7 +1378,6 @@ function QuizModal({ quizData, words, mode, pastAnswers, onClose, onSaveResult }
     </Modal>
   );
 }
-
 // ─────────────────────────────────────────────
 // STYLES
 // ─────────────────────────────────────────────
@@ -1434,7 +1500,11 @@ const styles = StyleSheet.create({
   quizSubmitBtn: { backgroundColor: "#27ae60", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
   quizScoreBar: { backgroundColor: "#1a4a7a", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
   quizScoreText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  wordInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 8 },
+  explainBtn: { backgroundColor: "#1a3a5c", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14, alignSelf: "flex-start", marginTop: 2, borderWidth: 1, borderColor: "#2980b9" },
+  explainBtnText: { color: "#5DADE2", fontWeight: "600", fontSize: 13 },
+  explainLoading: { flexDirection: "row", alignItems: "center", marginTop: 6 },
+  explainLoadingText: { color: "#F39C12", fontSize: 13, fontStyle: "italic" },
+  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 4, borderLeftWidth: 3, borderLeftColor: "#F39C12" },  wordInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 8 },
   wordInput: { backgroundColor: "#0f3460", color: "#fff", borderRadius: 10, padding: 14, fontSize: 18, borderWidth: 1, borderColor: "#1a4a7a" },
   lessonNavArrow: { backgroundColor: "#1a4a7a", borderRadius: 10, width: 42, height: 74, alignItems: "center", justifyContent: "center" },
   lessonNavArrowText: { color: "#2CC985", fontSize: 18, fontWeight: "bold" },

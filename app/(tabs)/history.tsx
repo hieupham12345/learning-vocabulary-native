@@ -23,12 +23,17 @@ import {
   clearQuizHistory,
   loadWord,
   saveQuiz,
+  saveQuizExplanation,
+  loadQuizExplanations,
   HistoryMeta,
   QuizHistoryEntry,
 } from "@/scripts/ExampleDB";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "expo-router";
+import { ActivityIndicator } from "react-native";
+import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 
+const learner = new VocabularyLearner();
 const CURRENT_WORD_KEY = "@current_word_data";
 
 export default function HistoryScreen() {
@@ -42,7 +47,8 @@ export default function HistoryScreen() {
   const [quizAnswers, setQuizAnswers] = useState<string[]>([]);
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizScore, setQuizScore] = useState(0);
-
+  // explanations[i] = text | "loading" — keyed by question index
+  const [explanations, setExplanations] = useState<Record<number, string | "loading">>({});
   // ─────────────────────────────────────────────
   // LOAD HISTORY FROM SQLITE
   // ─────────────────────────────────────────────
@@ -116,18 +122,27 @@ export default function HistoryScreen() {
   // ─────────────────────────────────────────────
   // QUIZ MODAL HANDLERS
   // ─────────────────────────────────────────────
-  const openQuizModal = (entry: QuizHistoryEntry, mode: "review" | "retake") => {
-    setActiveQuiz(entry);
-    setQuizMode(mode);
-    setQuizAnswers(
-      mode === "review"
-        ? entry.user_answers
-        : entry.quiz_data.quiz.map(() => "")
-    );
-    setQuizScore(mode === "review" ? entry.score : 0);
-    setQuizSubmitted(mode === "review");
-    setQuizModalVisible(true);
-  };
+  const openQuizModal = async (entry: QuizHistoryEntry, mode: "review" | "retake") => {
+      setActiveQuiz(entry);
+      setQuizMode(mode);
+      setQuizAnswers(
+        mode === "review"
+          ? entry.user_answers
+          : entry.quiz_data.quiz.map(() => "")
+      );
+      setQuizScore(mode === "review" ? entry.score : 0);
+      setQuizSubmitted(mode === "review");
+      setExplanations({});
+      setQuizModalVisible(true);
+
+      // Load cached explanations nếu có quizId
+      if (entry.id !== undefined) {
+        try {
+          const cached = await loadQuizExplanations(entry.id);
+          if (Object.keys(cached).length > 0) setExplanations(cached);
+        } catch { /* non-critical */ }
+      }
+    };
 
   const handleQuizOptionPress = (questionIndex: number, optionLetter: string) => {
     if (quizMode !== "retake") return;
@@ -164,6 +179,30 @@ export default function HistoryScreen() {
     Alert.alert("Retake Saved", `Saved new quiz result: ${score}/${newEntry.total}`);
   };
 
+  const handleExplain = async (i: number) => {
+    if (!activeQuiz) return;
+    if (explanations[i] && explanations[i] !== "loading") return;
+    setExplanations(prev => ({ ...prev, [i]: "loading" }));
+    const q = activeQuiz.quiz_data.quiz[i];
+    try {
+      const text = await learner.explainQuizQuestion(
+        q.question,
+        q.options,
+        q.answer,
+        q.word_tested ?? "",
+        activeQuiz.input_lang ?? "",
+        // output_lang không lưu trong quiz_history — dùng fallback
+        "Vietnamese"
+      );
+      setExplanations(prev => ({ ...prev, [i]: text }));
+      if (activeQuiz.id !== undefined) {
+        saveQuizExplanation(activeQuiz.id, i, text).catch(() => {});
+      }
+    } catch (e: any) {
+      setExplanations(prev => ({ ...prev, [i]: `❌ ${e.message}` }));
+    }
+  };
+
   const closeQuizModal = () => {
     setQuizModalVisible(false);
     setActiveQuiz(null);
@@ -171,6 +210,7 @@ export default function HistoryScreen() {
     setQuizAnswers([]);
     setQuizSubmitted(false);
     setQuizScore(0);
+    setExplanations({});
   };
 
   // ─────────────────────────────────────────────
@@ -349,11 +389,28 @@ export default function HistoryScreen() {
                           </View>
                         );
                       })}
-                      {quizSubmitted && question.explanation && (
-                        <Text style={styles.quizExplanation}>
-                          💡 {question.explanation}
-                        </Text>
-                      )}
+                      {quizSubmitted && (() => {
+                        const expState = explanations[index];
+                        if (!expState) return (
+                          <TouchableOpacity
+                            style={styles.explainBtn}
+                            onPress={() => handleExplain(index)}
+                          >
+                            <Text style={styles.explainBtnText}>💬 Explain</Text>
+                          </TouchableOpacity>
+                        );
+                        if (expState === "loading") return (
+                          <View style={styles.explainLoading}>
+                            <ActivityIndicator size="small" color="#F39C12" />
+                            <Text style={styles.explainLoadingText}> Generating explanation…</Text>
+                          </View>
+                        );
+                        return (
+                          <View style={styles.quizExplanationBox}>
+                            <Text style={styles.quizExplanation}>{expState}</Text>
+                          </View>
+                        );
+                      })()}
                     </View>
                   );
                 })}
@@ -445,4 +502,9 @@ const styles = StyleSheet.create({
   quizResultText: { color: "#F1C40F", fontWeight: "700", textAlign: "center", marginBottom: 10 },
   btnPrimary: { backgroundColor: "#1a4a7a", borderRadius: 10, paddingVertical: 12, alignItems: "center" },
   btnPrimaryText: { color: "#fff", fontWeight: "700" },
+  explainBtn: { backgroundColor: "#1a3a5c", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14, alignSelf: "flex-start", marginTop: 8, borderWidth: 1, borderColor: "#2980b9" },
+  explainBtnText: { color: "#5DADE2", fontWeight: "600", fontSize: 13 },
+  explainLoading: { flexDirection: "row", alignItems: "center", marginTop: 8 },
+  explainLoadingText: { color: "#F39C12", fontSize: 13, fontStyle: "italic" },
+  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 8, borderLeftWidth: 3, borderLeftColor: "#F39C12" },
 });

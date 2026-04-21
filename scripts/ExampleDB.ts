@@ -28,6 +28,7 @@ export interface HistoryMeta {
 }
 
 export interface QuizHistoryEntry {
+  id?: number;
   words: string[];
   score: number;
   total: number;
@@ -89,6 +90,7 @@ function rowToMeta(row: any): HistoryMeta {
 
 function rowToQuizEntry(row: any): QuizHistoryEntry {
   return {
+    id:           row.id,
     words:        pj<string[]>(row.words, []),
     score:        row.score,
     total:        row.total,
@@ -514,10 +516,10 @@ export async function clearWordHistory(): Promise<void> {
 // ══════════════════════════════════════════════
 // ─────────────────────────────────────────────
 
-export async function saveQuiz(entry: QuizHistoryEntry): Promise<void> {
+export async function saveQuiz(entry: QuizHistoryEntry): Promise<number | undefined> {
   try {
     const db = await getDB();
-    await db.runAsync(
+    const result = await db.runAsync(
       `INSERT INTO quiz_history
          (words, input_lang, score, total, taken_at, quiz_data, user_answers)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -531,12 +533,12 @@ export async function saveQuiz(entry: QuizHistoryEntry): Promise<void> {
         j(entry.user_answers),
       ]
     );
+    return result.lastInsertRowId;
   } catch (err) {
     logError("saveQuiz", err);
     throw err;
   }
 }
-
 export async function listQuizzes(opts: {
   inputLang?: string;
   limit?: number;
@@ -574,6 +576,45 @@ export async function clearQuizHistory(): Promise<void> {
   } catch (err) {
     logError("clearQuizHistory", err);
     throw err;
+  }
+}
+
+
+export async function saveQuizExplanation(
+  quizId: number,
+  questionIndex: number,
+  explanation: string
+): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.runAsync(
+      `INSERT INTO app_kv (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [`qexp:${quizId}:${questionIndex}`, JSON.stringify(explanation)]
+    );
+  } catch (err) {
+    logError(`saveQuizExplanation(${quizId}, ${questionIndex})`, err);
+  }
+}
+
+export async function loadQuizExplanations(
+  quizId: number
+): Promise<Record<number, string>> {
+  try {
+    const db = await getDB();
+    const rows = await db.getAllAsync<{ key: string; value: string }>(
+      `SELECT key, value FROM app_kv WHERE key LIKE ?`,
+      [`qexp:${quizId}:%`]
+    );
+    const result: Record<number, string> = {};
+    for (const row of rows) {
+      const idx = parseInt(row.key.split(":")[2], 10);
+      result[idx] = JSON.parse(row.value);
+    }
+    return result;
+  } catch (err) {
+    logError(`loadQuizExplanations(${quizId})`, err);
+    return {};
   }
 }
 
