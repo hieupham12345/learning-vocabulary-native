@@ -35,6 +35,13 @@ const LANGUAGE_TO_VOICE_NAME: Record<string, string> = {
 const QUIZ_BATCH_SIZE = 10;
 const QUIZ_MAX_QUESTIONS = 30; // hardcode ceiling; change to Infinity to remove cap
 
+const PROFICIENCY_SCALE: Record<string, string> = {
+  Chinese:  "HSK 1–6+ scale",
+  Japanese: "JLPT N5–N1 scale",
+  Korean:   "TOPIK I (1–2) / TOPIK II (3–6) scale",
+  English:  "CEFR A1–C2 scale",
+};
+
 export class VocabularyLearner {
   private apiKey: string;
   private modelType: string;
@@ -191,14 +198,8 @@ export class VocabularyLearner {
 
   /**
    * Build a single-batch quiz prompt.
-   *
-   * @param words            - Word list to draw questions from
-   * @param inputLanguage    - Language of the words / question sentences
-   * @param outputLanguage   - Language for answer options & answer key labels
-   * @param batchSize        - How many questions to generate in THIS call
-   * @param totalTarget      - Total questions the user wants (context only, for distribution guidance)
-   * @param mode             - "easy" | "hard"
-   * @param previousQuestions - Already-generated questions to avoid duplication
+   * Questions and ALL answer options are written ENTIRELY in inputLanguage.
+   * outputLanguage is reserved for explanation prompts only.
    */
   private createQuizBatchPrompt(
     words: string[],
@@ -213,6 +214,8 @@ export class VocabularyLearner {
     const batchLabel = previousQuestions.length === 0
       ? `first batch`
       : `batch ${Math.floor(previousQuestions.length / QUIZ_BATCH_SIZE) + 1} (questions ${previousQuestions.length + 1}–${previousQuestions.length + batchSize} of ${totalTarget})`;
+
+    const proficiencyScale = PROFICIENCY_SCALE[inputLanguage] ?? "CEFR A1–C2 scale";
 
     const difficultyGuide = mode === "easy"
       ? `Distribute the ${batchSize} questions as: ~40% EASY, ~40% MEDIUM, ~20% HARD. NO super_hard/very_hard.`
@@ -230,23 +233,32 @@ export class VocabularyLearner {
         )}\n`
       : "";
 
-    return `You are an expert language examiner.
+    return `You are an expert ${inputLanguage} language examiner designing a proficiency assessment.
 
 TASK: Generate EXACTLY ${batchSize} multiple-choice questions — ${batchLabel}.
 Words to test: [${wordsStr}]
-Question language: ${inputLanguage} | Answer/option language: ${outputLanguage}
 Mode: ${mode.toUpperCase()}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LANGUAGE RULE — NON-NEGOTIABLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Every "question" field and ALL items in "options" MUST be written ENTIRELY in ${inputLanguage}.
+Do NOT use any other language in these fields. The purpose is to assess ${inputLanguage} proficiency directly.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROFICIENCY ALIGNMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Align difficulty labels and sentence complexity to the ${proficiencyScale}.
 ${difficultyGuide}
 
 QUESTION DIMENSIONS (vary — never repeat same dimension consecutively):
 DIRECT_USAGE | SYNONYM_ANTONYM | COLLOCATION | CONTEXTUAL_MEANING | GRAMMAR_ROLE | ERROR_DETECTION | REGISTER_MATCH | NUANCE
 
 QUALITY RULES:
-- Spread questions across all words as evenly as possible.
-- All 4 options must be plausible distractors.
-- Correct answer position (A/B/C/D) must be evenly distributed across the batch.
-- Natural, exam-quality phrasing — not textbook-artificial.
+- Spread questions evenly across all words.
+- All 4 options must be plausible distractors written in ${inputLanguage}.
+- Distribute correct answer positions (A/B/C/D) evenly across the batch.
+- Exam-quality phrasing — natural, not textbook-artificial.
 ${avoidBlock}
 OUTPUT: valid JSON only — no markdown, no extra text, start with { end with }.
 
@@ -257,8 +269,8 @@ OUTPUT: valid JSON only — no markdown, no extra text, start with { end with }.
       "difficulty": "${mode === "easy" ? "easy|medium|hard" : "medium|hard|very_hard"}",
       "level": "<e.g. HSK 3 | JLPT N2 | CEFR B1>",
       "dimension": "<from dimension list>",
-      "question": "...",
-      "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
+      "question": "<entirely in ${inputLanguage}>",
+      "options": ["A. <${inputLanguage}>", "B. <${inputLanguage}>", "C. <${inputLanguage}>", "D. <${inputLanguage}>"],
       "answer": "<A|B|C|D>"
     }
   ]
@@ -267,17 +279,18 @@ OUTPUT: valid JSON only — no markdown, no extra text, start with { end with }.
 
   /**
    * Generate explanation for a completed quiz in one batch call.
-   * Called AFTER all questions have been generated and user has submitted.
+   * ALL explanations are written in outputLanguage.
+   * The question title is translated into outputLanguage for clarity.
    */
   private createExplanationPrompt(
     questions: any[],
     inputLanguage: string,
     outputLanguage: string
   ): string {
-    return `You are a language tutor. For each quiz question below, write a short explanation.
+    return `You are an expert ${inputLanguage} language tutor. Your student has just completed a quiz and needs clear explanations.
 
-Language of questions: ${inputLanguage}
-Explanation language: ${outputLanguage}
+Quiz question language: ${inputLanguage}
+Explanation language: ${outputLanguage} — ALL text in your response MUST be in ${outputLanguage} only.
 
 Questions (JSON array):
 ${JSON.stringify(questions.map((q, i) => ({
@@ -288,11 +301,18 @@ ${JSON.stringify(questions.map((q, i) => ({
   word_tested: q.word_tested,
 })), null, 2)}
 
+For EACH question, write an explanation that includes:
+1. 📋 Question translation — translate the question and all options into ${outputLanguage} so the student understands what was asked.
+2. ✅ Correct answer — explain in ${outputLanguage} WHY the correct option is right (meaning, grammar, usage context).
+3. ❌ Wrong answers — briefly explain in ${outputLanguage} why each incorrect option does NOT fit.
+4. 💡 Key insight — one concise takeaway about "${`<word_tested>`}" in ${outputLanguage}.
+5. 📊 Level note — mention the proficiency level (e.g. HSK 3, JLPT N2, CEFR B1) and what it implies.
+
 OUTPUT: valid JSON only — array of exactly ${questions.length} objects, same order.
 [
   {
     "n": 1,
-    "explanation": "🗣️ Pronunciation: ...\\n📝 Translation: ...\\n💡 Analysis: ...\\n📊 Level: ..."
+    "explanation": "📋 <translated question & options in ${outputLanguage}>\\n\\n✅ <correct answer explanation in ${outputLanguage}>\\n\\n❌ <wrong answers explanation in ${outputLanguage}>\\n\\n💡 <key insight in ${outputLanguage}>\\n\\n📊 <level note in ${outputLanguage}>"
   },
   ...
 ]`;
@@ -361,6 +381,7 @@ OUTPUT: valid JSON only — array of exactly ${questions.length} objects, same o
   /**
    * Fetch explanations for a list of questions after the quiz is submitted.
    * Returns the same questions array with `explanation` fields populated.
+   * All explanations are in outputLanguage; question titles are translated.
    */
   public async generateQuizExplanations(
     questions: any[],
@@ -463,51 +484,49 @@ OUTPUT: valid JSON only — array of exactly ${questions.length} objects, same o
   }
 
   // ─────────────────────────────────────────────
-    // EXPLAIN SINGLE QUIZ QUESTION
-    // ─────────────────────────────────────────────
+  // EXPLAIN SINGLE QUIZ QUESTION
+  // ─────────────────────────────────────────────
   public async explainQuizQuestion(
-      question: string,
-      options: string[],
-      correctAnswer: string,
-      wordTested: string,
-      inputLanguage: string,
-      outputLanguage: string
-    ): Promise<string> {
-      const correctOption = options.find(o => o.startsWith(correctAnswer)) ?? correctAnswer;
-      const prompt = `You are an expert language tutor explaining a vocabulary quiz question.
+    question: string,
+    options: string[],
+    correctAnswer: string,
+    wordTested: string,
+    inputLanguage: string,
+    outputLanguage: string
+  ): Promise<string> {
+    const correctOption = options.find(o => o.startsWith(correctAnswer)) ?? correctAnswer;
+    const wrongOptions  = options.filter(o => !o.startsWith(correctAnswer));
 
-  Question language: ${inputLanguage}
-  Explanation language: ${outputLanguage}
-  Word being tested: "${wordTested}"
+    const prompt = `You are a ${inputLanguage} language tutor. Explain the quiz question below to your student.
+Write EVERYTHING in ${outputLanguage}. Be concise — enough to understand, no more. No markdown, no bullet symbols, plain text only.
 
-  QUESTION:
-  ${question}
+Question: ${question}
+Options: ${options.join(" / ")}
+Correct answer: ${correctOption}
 
-  OPTIONS:
-  ${options.join("\n")}
+Structure your response in this exact format (use these labels as plain text headers):
 
-  CORRECT ANSWER: ${correctOption}
+Translation: [Translate the question and all options into ${outputLanguage}.]
 
-  Write a clear, concise explanation covering:
-  🗣️ Pronunciation/Romanization (if ${inputLanguage} is non-Latin)
-  📝 Why "${correctOption}" is correct
-  ❌ Why the other options are wrong (briefly)
-  💡 Key grammar or usage insight about "${wordTested}"
-  📊 Difficulty note if relevant
+Correct answer: [In 1–2 sentences, explain why ${correctOption} is right — meaning, grammar, or usage.]
 
-  Use ${outputLanguage} for ALL explanations. Be direct and educational. Plain text only, no markdown.`;
+Wrong answers: [For each wrong option, one short sentence explaining why it does not fit: ${wrongOptions.map(o => o).join(", ")}.]
 
-      try {
-        const responseText = await callChatbot(prompt, this.modelName, this.modelType, this.apiKey);
-        return responseText.trim();
-      } catch (error: any) {
-        throw new Error(`Explanation failed: ${error.message}`);
-      }
+Key point: [One sentence on the most important thing to remember about "${wordTested}".]
+
+Level: [State the proficiency level (e.g. HSK 4, JLPT N2, CEFR B2) and what skill this question tests.]`;
+
+    try {
+      const responseText = await callChatbot(prompt, this.modelName, this.modelType, this.apiKey);
+      return responseText.trim();
+    } catch (error: any) {
+      throw new Error(`Explanation failed: ${error.message}`);
     }
+  }
 
-    // ─────────────────────────────────────────────
-    // INTERNAL UTILS
-    // ─────────────────────────────────────────────
+  // ─────────────────────────────────────────────
+  // INTERNAL UTILS
+  // ─────────────────────────────────────────────
   private cleanJsonResponse(response: string): string {
     let clean = response.trim();
     if (clean.startsWith("```json")) clean = clean.slice(7).trim();
