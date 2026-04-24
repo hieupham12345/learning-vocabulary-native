@@ -311,7 +311,7 @@ export default function HistoryScreen() {
         )}
 
         <TouchableOpacity style={styles.clearBtn} onPress={handleClearHistory}>
-          <Text style={styles.clearBtnText}>🗑️ Clear All History</Text>
+          <Text style={styles.clearBtnText}>🗑️ Clear History</Text>
         </TouchableOpacity>
       </View>
 
