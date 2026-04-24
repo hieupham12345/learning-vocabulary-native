@@ -2,6 +2,10 @@
  * exam.tsx
  * Exam tab — Reading Practice (Luyện đọc)
  * UI follows History.tsx patterns, dark navy theme
+ *
+ * Upgrades:
+ *  - LocalDictionary (L1 memory → L2 SQLite → L3 API) để tiết kiệm API calls
+ *  - Tooltip tự ẩn khi user kéo ScrollView (onScroll)
  */
 
 import React, { useState, useCallback, useRef } from "react";
@@ -15,6 +19,8 @@ import {
   Modal,
   ActivityIndicator,
   Dimensions,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import * as SQLite from "expo-sqlite";
@@ -22,6 +28,7 @@ import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 import { callChatbot } from "../../scripts/chatbotService";
 import { OPENAI_API_KEY } from "../../scripts/config";
 import Constants from "expo-constants";
+import { localDict } from "../../scripts/LocalDictionary"; // ← NEW
 
 // ─────────────────────────────────────────────
 // CONFIG
@@ -65,7 +72,7 @@ export interface ReadingHistoryEntry {
   topic: string;
   timestamp: string;
   passage: ReadingPassage;
-  tokens: string[] | null; // cached tokenization
+  tokens: string[] | null;
   user_answers: string[];
   score: number;
   total: number;
@@ -98,7 +105,6 @@ async function getDB(): Promise<SQLite.SQLiteDatabase> {
       completed INTEGER NOT NULL DEFAULT 0
     );
   `);
-  // Migration: add tokens_json column if it doesn't exist yet
   try {
     await _db.execAsync(`ALTER TABLE reading_history ADD COLUMN tokens_json TEXT`);
   } catch {
@@ -228,7 +234,7 @@ SETTINGS:
 STRICT RULES:
 1. The passage body MUST be written entirely in ${inputLang}.
 2. The title MUST be in ${inputLang}.
-3. All comprehension questions and options MUST be written in ${inputLang} (so the student reads in ${inputLang}).
+3. All comprehension questions and options MUST be written in ${inputLang}.
 4. "explanation" for each question MUST be in ${outputLang}.
 5. vocabulary_notes: "word" and "reading" (romanization if applicable) in ${inputLang}; "meaning" in ${outputLang}.
 6. Output valid JSON only — no markdown, no code blocks.
@@ -266,32 +272,25 @@ const OUTPUT_LANG_OPTIONS = ["Vietnamese", "English", "Chinese", "Japanese", "Ko
 export default function ExamScreen() {
   const [historyTab, setHistoryTab] = useState(false);
 
-  // Reading setup
   const [inputLang, setInputLang] = useState("Chinese");
   const [outputLang, setOutputLang] = useState("Vietnamese");
   const [level, setLevel] = useState("HSK 3");
   const [length, setLength] = useState<"short" | "medium" | "long">("medium");
   const [topic, setTopic] = useState("Daily Life");
 
-  // Generation
   const [generating, setGenerating] = useState(false);
 
-  // Active reading session
   const [readingModal, setReadingModal] = useState(false);
   const [activeEntry, setActiveEntry] = useState<ReadingHistoryEntry | null>(null);
-  const [readingMode, setReadingMode] = useState<"read" | "review">("read");
 
-  // History
   const [history, setHistory] = useState<ReadingHistoryEntry[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Lang pickers
   const [inputLangPicker, setInputLangPicker] = useState(false);
   const [outputLangPicker, setOutputLangPicker] = useState(false);
   const [levelPicker, setLevelPicker] = useState(false);
   const [topicPicker, setTopicPicker] = useState(false);
 
-  // ── Load history ────────────────────────────
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
@@ -317,7 +316,6 @@ export default function ExamScreen() {
     setInputLangPicker(false);
   };
 
-  // ── Generate & save immediately ──────────────
   const handleGenerate = async () => {
     setGenerating(true);
     try {
@@ -339,20 +337,18 @@ export default function ExamScreen() {
         topic,
         timestamp: new Date().toISOString(),
         passage,
-        tokens: null, // will be populated after tokenization in modal
+        tokens: null,
         user_answers: passage.comprehension_questions.map(() => ""),
         score: 0,
         total: passage.comprehension_questions.length,
         completed: false,
       };
 
-      // Save immediately on generation
       const id = await saveReading(entry);
       const saved = { ...entry, id };
 
       setHistory((prev) => [saved, ...prev]);
       setActiveEntry(saved);
-      setReadingMode("read");
       setReadingModal(true);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to generate passage.");
@@ -361,14 +357,11 @@ export default function ExamScreen() {
     }
   };
 
-  // ── Open history entry ────────────────────────
   const openEntry = (entry: ReadingHistoryEntry) => {
     setActiveEntry({ ...entry });
-    setReadingMode("review");
     setReadingModal(true);
   };
 
-  // ── Clear history ─────────────────────────────
   const handleClear = () => {
     Alert.alert("Confirm", "Clear all reading history?", [
       { text: "Cancel", style: "cancel" },
@@ -385,9 +378,6 @@ export default function ExamScreen() {
 
   const levels = LEVEL_MAP[inputLang] ?? ["Beginner", "Intermediate", "Advanced"];
 
-  // ─────────────────────────────────────────────
-  // RENDER
-  // ─────────────────────────────────────────────
   return (
     <ScrollView style={s.container} contentContainerStyle={s.containerContent} nestedScrollEnabled>
       <View style={s.header}>
@@ -395,7 +385,6 @@ export default function ExamScreen() {
       </View>
 
       <View style={s.card}>
-        {/* TAB BAR */}
         <View style={s.tabRow}>
           <TouchableOpacity
             style={[s.tab, !historyTab && s.tabActive]}
@@ -411,7 +400,6 @@ export default function ExamScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* ── READING SETUP ── */}
         {!historyTab && (
           <View>
             <Text style={s.sectionLabel}>🌐 Languages</Text>
@@ -476,7 +464,6 @@ export default function ExamScreen() {
           </View>
         )}
 
-        {/* ── HISTORY ── */}
         {historyTab && (
           <ScrollView
             style={s.historyList}
@@ -520,7 +507,7 @@ export default function ExamScreen() {
         )}
       </View>
 
-      {/* ── PICKERS (no Cancel button) ── */}
+      {/* ── PICKERS ── */}
       <Modal visible={inputLangPicker} transparent animationType="slide">
         <TouchableOpacity
           style={s.modalOverlay}
@@ -654,14 +641,16 @@ function ReadingModal({
   const [submitted, setSubmitted] = useState(isReview);
   const [score, setScore] = useState(entry.score);
 
-  // Tokenization — use cached if available
   const [tokens, setTokens] = useState<string[] | null>(entry.tokens ?? null);
   const [tokenizing, setTokenizing] = useState(false);
   const tokensSaved = useRef(entry.tokens !== null);
 
-  // Translation: map from token index → translation string
-  const [translationMap, setTranslationMap] = useState<Record<number, string>>({});
-  const translationCache = useRef<Record<string, string>>({});
+  // tooltip: map từ token index → { text, align }
+  const [translationMap, setTranslationMap] = useState<
+    Record<number, { text: string; align: "left" | "right" }>
+  >({});
+
+  // inflight set để tránh gọi API trùng
   const inflight = useRef<Set<string>>(new Set());
 
   // Tokenize on mount only if not cached
@@ -672,7 +661,6 @@ function ReadingModal({
       .tokenizeSentence(passage.body, inputLang)
       .then((t) => {
         setTokens(t);
-        // Persist tokens to DB so future reviews skip tokenization
         if (!tokensSaved.current) {
           const updated = { ...entry, tokens: t };
           onUpdate(updated).catch(() => {});
@@ -683,12 +671,26 @@ function ReadingModal({
       .finally(() => setTokenizing(false));
   }, []);
 
-  const handleTokenPress = async (token: string, idx: number) => {
+  // ── NEW: ẩn tooltip khi user scroll ──────────
+  const handlePassageScroll = useCallback(
+    (_e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (Object.keys(translationMap).length > 0) {
+        setTranslationMap({});
+      }
+    },
+    [translationMap]
+  );
+
+  // ── NEW: handleTokenPress dùng LocalDictionary ──
+  const handleTokenPress = async (event: any, token: string, idx: number) => {
     const core = token.trim();
     if (!core) return;
-    const key = `${core}:${inputLang}:${outputLang}`;
 
-    // Toggle off if already showing this token's popup
+    const screenWidth = Dimensions.get("window").width;
+    const pageX = event.nativeEvent.pageX;
+    const align: "left" | "right" = pageX > screenWidth / 2 ? "right" : "left";
+
+    // Toggle off nếu đang hiện
     if (translationMap[idx] !== undefined) {
       setTranslationMap((prev) => {
         const copy = { ...prev };
@@ -698,25 +700,29 @@ function ReadingModal({
       return;
     }
 
-    // Clear other popups, show placeholder for this one
-    setTranslationMap({ [idx]: "⏳ Translating…" });
+    // Hiện trạng thái loading ngay lập tức
+    setTranslationMap({ [idx]: { text: "⏳ Translating…", align } });
 
-    const cached = translationCache.current[core];
-    if (cached) {
-      setTranslationMap({ [idx]: cached });
-      return;
-    }
+    // Tránh gọi trùng cho cùng 1 token
+    const inflightKey = `${core}:${inputLang}:${outputLang}`;
+    if (inflight.current.has(inflightKey)) return;
+    inflight.current.add(inflightKey);
 
-    if (inflight.current.has(key)) return;
-    inflight.current.add(key);
     try {
-      const result = await learner.translateText(core, inputLang, outputLang);
-      translationCache.current[core] = result;
-      setTranslationMap((prev) => ({ ...prev, [idx]: result }));
+      // ── Dùng LocalDictionary: L1 → L2 → L3 (API) ──
+      const result = await localDict.translateToken(
+        core,
+        inputLang,
+        outputLang,
+        // L3 fallback: chỉ gọi API khi không có cache
+        () => learner.translateText(core, inputLang, outputLang)
+      );
+
+      setTranslationMap((prev) => ({ ...prev, [idx]: { text: result, align } }));
     } catch {
-      setTranslationMap((prev) => ({ ...prev, [idx]: "❌ Translation failed." }));
+      setTranslationMap((prev) => ({ ...prev, [idx]: { text: "❌ Lỗi dịch", align } }));
     } finally {
-      inflight.current.delete(key);
+      inflight.current.delete(inflightKey);
     }
   };
 
@@ -752,14 +758,14 @@ function ReadingModal({
         <View style={rm.header}>
           <View style={{ flex: 1 }}>
             <Text style={rm.headerTitle} numberOfLines={2}>{passage.title}</Text>
-            <Text style={rm.headerMeta}>{entry.level} · entry.input_lang · {entry.length}</Text>
+            <Text style={rm.headerMeta}>{entry.level} · {entry.input_lang} · {entry.length}</Text>
           </View>
           <TouchableOpacity onPress={onClose}>
             <Text style={rm.closeBtn}>✕</Text>
           </TouchableOpacity>
         </View>
 
-        {/* Phase tabs — Read & Quiz only */}
+        {/* Phase tabs */}
         <View style={rm.phaseRow}>
           <TouchableOpacity
             style={[rm.phaseTab, phase === "read" && rm.phaseTabActive]}
@@ -779,40 +785,67 @@ function ReadingModal({
           </TouchableOpacity>
         </View>
 
-        <ScrollView contentContainerStyle={rm.body} nestedScrollEnabled>
-
+        {/* ── ScrollView với onScroll để ẩn tooltip ── */}
+        <ScrollView
+          contentContainerStyle={rm.body}
+          nestedScrollEnabled
+          onScroll={handlePassageScroll}       // ← ẩn tooltip khi kéo
+          scrollEventThrottle={16}             // ← fire mỗi ~16ms (60fps)
+        >
           {/* ── READ PHASE ── */}
           {phase === "read" && (
             <View>
-              <View style={rm.passageBox}>
+              <View style={[rm.passageBox, { zIndex: 10, overflow: "visible" }]}>
                 {tokenizing ? (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 12 }}>
                     <ActivityIndicator size="small" color="#F1C40F" />
                     <Text style={{ color: "#888", fontStyle: "italic" }}>Tokenizing passage…</Text>
                   </View>
                 ) : (
-                  <Text style={rm.passageText}>
+                  <View style={rm.passageContainer}>
                     {displayTokens.map((tok, i) => {
+                      if (tok.includes("\n")) {
+                        const parts = tok.split("\n");
+                        return (
+                          <React.Fragment key={i}>
+                            {parts.map((part, partIdx) => (
+                              <React.Fragment key={`${i}-${partIdx}`}>
+                                {partIdx > 0 && <View style={{ width: "100%", height: 12 }} />}
+                                {part !== "" && <Text style={rm.passageText}>{part}</Text>}
+                              </React.Fragment>
+                            ))}
+                          </React.Fragment>
+                        );
+                      }
+
                       const core = tok.trim();
-                      if (!core) return <Text key={i}>{tok}</Text>;
+                      if (!core) return <Text key={i} style={rm.passageText}>{tok}</Text>;
 
                       const translation = translationMap[i];
+                      const isActive = translation !== undefined;
 
                       return (
-                        <React.Fragment key={i}>
+                        <View key={i} style={[rm.tokenWrapper, isActive && { zIndex: 10 }]}>
                           <Text
-                            style={[rm.tokenText, translation !== undefined && rm.tokenActive]}
-                            onPress={() => handleTokenPress(core, i)}
+                            style={[rm.passageText, rm.tokenText, isActive && rm.tokenActive]}
+                            onPress={(e) => handleTokenPress(e, core, i)}
                           >
                             {tok}
                           </Text>
-                          {translation !== undefined && (
-                            <Text style={rm.inlineTranslation}>{` [${translation}] `}</Text>
+                          {isActive && (
+                            <View
+                              style={[
+                                rm.tooltipContainer,
+                                translation.align === "left" ? { left: 0 } : { right: 0 },
+                              ]}
+                            >
+                              <Text style={rm.tooltipText}>{translation.text}</Text>
+                            </View>
                           )}
-                        </React.Fragment>
+                        </View>
                       );
                     })}
-                  </Text>
+                  </View>
                 )}
               </View>
 
@@ -955,7 +988,6 @@ const s = StyleSheet.create({
   clearBtn: { backgroundColor: "#922b21", borderRadius: 8, paddingVertical: 12, marginTop: 8, alignItems: "center" },
   clearBtnText: { color: "#fff", fontWeight: "bold" },
   emptyText: { color: "#555", textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
-  // Picker modals — tap overlay to dismiss, no Cancel button
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
   pickerSheet: { backgroundColor: "#16213e", borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
   pickerSheetTitle: { color: "#F1C40F", fontSize: 17, fontWeight: "bold", marginBottom: 14, textAlign: "center" },
@@ -979,13 +1011,28 @@ const rm = StyleSheet.create({
   phaseTabTextActive: { color: "#2CC985" },
   body: { padding: 16, paddingBottom: 40 },
   passageBox: { backgroundColor: "#0a1628", borderRadius: 12, padding: 14, marginBottom: 16 },
-  passageText: { fontSize: 18, color: "#E0E0E0", lineHeight: 32, flexWrap: "wrap" },
-  // Token: tappable word
-  tokenText: { color: "#E0E0E0", textDecorationLine: "underline", textDecorationColor: "#444" },
-  // Token when its translation popup is visible
+  passageContainer: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start" },
+  tokenWrapper: { position: "relative" },
+  passageText: { fontSize: 18, color: "#E0E0E0", lineHeight: 32 },
+  tokenText: { textDecorationLine: "underline", textDecorationColor: "#444" },
   tokenActive: { color: "#F1C40F", textDecorationColor: "#F1C40F" },
-  // Inline translation appearing right after the tapped token
-  inlineTranslation: { color: "#2ECC71", fontSize: 14, fontStyle: "italic", backgroundColor: "#0d3320", borderRadius: 4 },
+  tooltipContainer: {
+    position: "absolute",
+    top: 32,
+    backgroundColor: "#1a4a7a",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    maxWidth: 300,
+    minWidth: 150,
+    zIndex: 999,
+    elevation: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.5,
+    shadowRadius: 5,
+  },
+  tooltipText: { color: "#2ECC71", fontSize: 14, fontWeight: "bold", textAlign: "left" },
   proceedBtn: { backgroundColor: "#1a4a7a", borderRadius: 10, paddingVertical: 14, alignItems: "center", marginBottom: 10 },
   proceedBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
   scoreCard: { backgroundColor: "#0a1628", borderRadius: 12, padding: 16, marginBottom: 16, alignItems: "center" },
