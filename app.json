@@ -40,7 +40,9 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+           ["expo-av", { "microphonePermission": "Allow this app to access your microphone." }]
+
     ],
     "experiments": {
       "typedRoutes": true,

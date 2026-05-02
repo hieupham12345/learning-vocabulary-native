@@ -20,6 +20,10 @@ import * as Speech from "expo-speech";
 import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
+import { SpeechCheck } from "@/app/SpeechCheck";
+import { OPENAI_API_KEY } from "@/scripts/config"; // đường dẫn giống như VocabularyLearner.ts
+
+const GPT_API_KEY = OPENAI_API_KEY; // Đảm bảo biến này được export từ config.ts và có giá trị hợp lệ
 
 import {
   initDatabase,
@@ -986,7 +990,7 @@ export default function VocabularyLearnerUI() {
       </Modal>
 
       {memoryCheckVisible && (
-        <MemoryCheckModal examples={allExamples} inputLang={inputLang} ttsSpeed={ttsSpeed} onClose={() => setMemoryCheckVisible(false)} />
+        <MemoryCheckModal examples={allExamples} inputLang={inputLang} ttsSpeed={ttsSpeed} onClose={() => setMemoryCheckVisible(false)} apiKey={GPT_API_KEY} />
       )}
 
       <Modal visible={quizSetupVisible} transparent animationType="fade">
@@ -1017,7 +1021,7 @@ export default function VocabularyLearnerUI() {
       </Modal>
 
       {practiceModalVisible && (
-        <TypingPracticeModal example={currentExample} currentScore={practiceSuccess} onClose={() => setPracticeModalVisible(false)} onCorrect={() => setPracticeSuccess((n) => n + 1)} inputLang={inputLang} ttsSpeed={ttsSpeed} />
+        <TypingPracticeModal example={currentExample} currentScore={practiceSuccess} onClose={() => setPracticeModalVisible(false)} onCorrect={() => setPracticeSuccess((n) => n + 1)} inputLang={inputLang} ttsSpeed={ttsSpeed} apiKey={GPT_API_KEY} />
       )}
 
       {quizWindowData && (
@@ -1110,14 +1114,19 @@ function OverviewRow({ icon, label, value }: { icon: string; label: string; valu
   );
 }
 
-function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
-  examples: ExampleItem[]; inputLang: string; ttsSpeed: number; onClose: () => void;
+function MemoryCheckModal({
+  examples, inputLang, ttsSpeed, onClose, apiKey = "",
+}: {
+  examples: ExampleItem[]; inputLang: string; ttsSpeed: number;
+  onClose: () => void; apiKey?: string;
 }) {
-  const [shuffled]      = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
-  const [idx, setIdx]   = useState(0);
+  const [shuffled]        = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
+  const [idx, setIdx]     = useState(0);
   const [input, setInput] = useState("");
   const [showHint, setShowHint] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone]   = useState(false);
+  const [tab, setTab]     = useState<"typing" | "speech">("typing");
+  const [speechKey, setSpeechKey] = useState(0);
 
   const current = shuffled[idx];
   const target  = current?.sentence?.trim() ?? "";
@@ -1128,13 +1137,25 @@ function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
     return () => clearTimeout(t);
   }, [idx]);
 
-  const handleChange = (text: string) => {
+  useEffect(() => {
+    setInput("");
+    setShowHint(false);
+    setSpeechKey(k => k + 1);
+  }, [idx]);
+
+  const advance = () => {
+    const next = idx + 1;
+    if (next >= shuffled.length) setDone(true);
+    else setTimeout(() => setIdx(next), 500);
+  };
+
+  const handleTypingChange = (text: string) => {
     setInput(text);
-    if (text === target && target.length > 0) {
-      const next = idx + 1;
-      if (next >= shuffled.length) { setDone(true); }
-      else { setTimeout(() => { setIdx(next); setInput(""); setShowHint(false); }, 500); }
-    }
+    if (text === target && target.length > 0) advance();
+  };
+
+  const handleSpeechResult = (passed: boolean) => {
+    if (passed) setTimeout(() => advance(), 1200);
   };
 
   return (
@@ -1164,7 +1185,23 @@ function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
                 <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
               </View>
             )}
-            <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleChange} autoFocus />
+
+            {/* ── Tab switcher ── */}
+            <View style={mcStyles.tabs}>
+              <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
+                <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[mcStyles.tab, tab === "speech" && mcStyles.tabActive]} onPress={() => setTab("speech")}>
+                <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
+              </TouchableOpacity>
+            </View>
+
+            {tab === "typing" ? (
+              <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
+            ) : (
+              <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
+            )}
+
             <View style={styles.memCheckBtnRow}>
               <TouchableOpacity style={styles.hintBtn} onPressIn={() => setShowHint(true)} onPressOut={() => setShowHint(false)}>
                 <Text style={styles.hintBtnText}>💡 Hold for Hint</Text>
@@ -1177,12 +1214,18 @@ function MemoryCheckModal({ examples, inputLang, ttsSpeed, onClose }: {
   );
 }
 
-function TypingPracticeModal({ example, currentScore, onClose, onCorrect, inputLang, ttsSpeed }: {
+function TypingPracticeModal({
+  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed, apiKey = "",
+}: {
   example: ExampleItem | null; currentScore: number;
-  onClose: () => void; onCorrect: () => void; inputLang: string; ttsSpeed: number;
+  onClose: () => void; onCorrect: () => void;
+  inputLang: string; ttsSpeed: number; apiKey?: string;
 }) {
-  const [input, setInput]         = useState("");
+  const [input,     setInput]     = useState("");
   const [completed, setCompleted] = useState(false);
+  const [tab,       setTab]       = useState<"typing" | "speech">("typing");
+  const [speechKey, setSpeechKey] = useState(0);
+
   const target = example?.sentence?.trim() ?? "";
 
   useEffect(() => {
@@ -1191,12 +1234,20 @@ function TypingPracticeModal({ example, currentScore, onClose, onCorrect, inputL
     return () => clearTimeout(t);
   }, [example?.sentence]);
 
-  const handleChange = (text: string) => {
+  const handleTypingChange = (text: string) => {
     setInput(text);
     if (text === target && target.length > 0) {
       onCorrect();
       setCompleted(true);
-      setTimeout(() => { setInput(""); setCompleted(false); }, 700);
+      setTimeout(() => { setInput(""); setCompleted(false); setSpeechKey(k => k + 1); }, 700);
+    }
+  };
+
+  const handleSpeechResult = (passed: boolean) => {
+    if (passed) {
+      onCorrect();
+      setCompleted(true);
+      setTimeout(() => { setCompleted(false); setSpeechKey(k => k + 1); }, 1500);
     }
   };
 
@@ -1216,10 +1267,28 @@ function TypingPracticeModal({ example, currentScore, onClose, onCorrect, inputL
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
-          <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleChange} autoFocus />
+
+          {/* ── Tab switcher ── */}
+          <View style={mcStyles.tabs}>
+            <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
+              <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[mcStyles.tab, tab === "speech" && mcStyles.tabActive]} onPress={() => setTab("speech")}>
+              <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
+            </TouchableOpacity>
+          </View>
+
+          {tab === "typing" ? (
+            <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
+          ) : (
+            <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
+          )}
+
           {completed && (
             <View style={styles.typingSuccessBox}>
-              <Text style={styles.typingSuccessText}>✅ Correct! Keep going.</Text>
+              <Text style={styles.typingSuccessText}>
+                {tab === "speech" ? "✅ Great pronunciation!" : "✅ Correct! Keep going."}
+              </Text>
             </View>
           )}
           <TouchableOpacity style={[styles.btnPrimary, { marginTop: 16 }]} onPress={onClose}>
@@ -1509,4 +1578,12 @@ const styles = StyleSheet.create({
   lessonNavArrow: { backgroundColor: "#1a4a7a", borderRadius: 10, width: 42, height: 74, alignItems: "center", justifyContent: "center" },
   lessonNavArrowText: { color: "#2CC985", fontSize: 18, fontWeight: "bold" },
   lessonNavHint: { color: "#5DADE2", fontSize: 11, marginTop: 4, marginLeft: 4, fontStyle: "italic" },
+});
+
+const mcStyles = StyleSheet.create({
+  tabs:          { flexDirection: "row", gap: 10, marginTop: 16, marginBottom: 4 },
+  tab:           { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: "center", backgroundColor: "#0d1b2a", borderWidth: 1, borderColor: "#1a3a5c" },
+  tabActive:     { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
+  tabText:       { color: "#888", fontWeight: "600", fontSize: 14 },
+  tabTextActive: { color: "#2CC985" },
 });
