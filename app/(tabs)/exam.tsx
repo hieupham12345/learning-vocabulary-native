@@ -21,6 +21,8 @@ import {
   Dimensions,
   NativeSyntheticEvent,
   NativeScrollEvent,
+  TouchableWithoutFeedback,   
+
 } from "react-native";
 import { useFocusEffect } from "expo-router";
 import * as SQLite from "expo-sqlite";
@@ -671,6 +673,15 @@ function ReadingModal({
       .finally(() => setTokenizing(false));
   }, []);
 
+
+  // ── Thêm vào sau khai báo inflight.current ──
+  const hasTooltip = Object.keys(translationMap).length > 0;
+
+  const dismissTooltip = useCallback(() => {
+    setTranslationMap({});
+  }, []);
+
+
   // ── NEW: ẩn tooltip khi user scroll ──────────
   const handlePassageScroll = useCallback(
     (_e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -764,7 +775,11 @@ function ReadingModal({
             <Text style={rm.closeBtn}>✕</Text>
           </TouchableOpacity>
         </View>
-
+        {hasTooltip && (
+          <TouchableWithoutFeedback onPress={dismissTooltip}>
+            <View style={rm.tooltipOverlay} />
+          </TouchableWithoutFeedback>
+        )}
         {/* Phase tabs */}
         <View style={rm.phaseRow}>
           <TouchableOpacity
@@ -1053,4 +1068,13 @@ const rm = StyleSheet.create({
   explanationText: { color: "#F39C12", fontSize: 13, lineHeight: 20 },
   submitBtn: { backgroundColor: "#27ae60", borderRadius: 10, paddingVertical: 16, alignItems: "center", marginTop: 8 },
   submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+  tooltipOverlay: {
+  position: "absolute",
+  top: 0,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 100,          // dưới tooltip (zIndex 999) nhưng trên content
+  backgroundColor: "transparent",
+},
 });
