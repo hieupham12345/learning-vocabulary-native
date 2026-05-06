@@ -21,7 +21,8 @@ import {
   Dimensions,
   NativeSyntheticEvent,
   NativeScrollEvent,
-  TouchableWithoutFeedback,   
+  TouchableWithoutFeedback,
+  TextInput,   
 
 } from "react-native";
 import { useFocusEffect } from "expo-router";
@@ -45,6 +46,10 @@ const AGENT = "chatgpt";
 const MODEL = "gpt-5.4-mini";
 
 const learner = new VocabularyLearner();
+
+function buildKeywordPrompt(inputLang: string, topic: string): string {
+  return `Generate a single short, specific keyword or phrase (2-5 words) in English that could serve as a unique angle or focus for a ${inputLang} reading passage on the topic "${topic}". Be creative and specific — avoid generic words. Return only the keyword, nothing else.`;
+}
 
 // ─────────────────────────────────────────────
 // TYPES
@@ -219,9 +224,13 @@ function buildReadingPrompt(
   outputLang: string,
   level: string,
   length: string,
-  topic: string
+  topic: string,
+  keyword: string          // ← thêm param
 ): string {
   const wordRange = LENGTH_WORDS[length] ?? "150–250 words";
+  const keywordLine = keyword.trim()
+    ? `- Specific angle / keyword: "${keyword.trim()}" — weave this naturally into the passage`
+    : "";
   return `You are an expert ${inputLang} language examiner creating a reading comprehension passage for a standardized exam.
 
 TASK: Generate a complete reading comprehension exercise.
@@ -232,6 +241,7 @@ SETTINGS:
 - Proficiency level: ${level}
 - Passage length: ${wordRange}
 - Topic: ${topic}
+${keywordLine}
 
 STRICT RULES:
 1. The passage body MUST be written entirely in ${inputLang}.
@@ -293,6 +303,10 @@ export default function ExamScreen() {
   const [levelPicker, setLevelPicker] = useState(false);
   const [topicPicker, setTopicPicker] = useState(false);
 
+
+  const [keyword, setKeyword] = useState("");
+  const [generatingKeyword, setGeneratingKeyword] = useState(false);
+
   const loadHistory = useCallback(async () => {
     setLoadingHistory(true);
     try {
@@ -318,10 +332,23 @@ export default function ExamScreen() {
     setInputLangPicker(false);
   };
 
+  const handleRandomKeyword = async () => {
+    setGeneratingKeyword(true);
+    try {
+      const prompt = buildKeywordPrompt(inputLang, topic);
+      const result = await callChatbot(prompt, MODEL, AGENT, GPT_API_KEY);
+      setKeyword(result.trim().replace(/^["']|["']$/g, ""));
+    } catch {
+      // silent fail — user can retry
+    } finally {
+      setGeneratingKeyword(false);
+    }
+  };
+
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      const prompt = buildReadingPrompt(inputLang, outputLang, level, length, topic);
+      const prompt = buildReadingPrompt(inputLang, outputLang, level, length, topic, keyword);
       const raw = await callChatbot(prompt, MODEL, AGENT, GPT_API_KEY);
       let clean = raw.trim();
       if (clean.startsWith("```json")) clean = clean.slice(7).trim();
@@ -445,9 +472,32 @@ export default function ExamScreen() {
             </View>
 
             <Text style={s.sectionLabel}>🏷️ Topic</Text>
+      
             <TouchableOpacity style={s.pickerFull} onPress={() => setTopicPicker(true)}>
               <Text style={s.pickerText}>{topic} ▼</Text>
             </TouchableOpacity>
+
+            <Text style={s.sectionLabel}>🔑 Keyword</Text>
+            <View style={s.keywordRow}>
+              <TextInput
+                style={s.keywordInput}
+                value={keyword}
+                onChangeText={setKeyword}
+                placeholder="e.g. morning routine, street food…"
+                placeholderTextColor="#444"
+              />
+              <TouchableOpacity
+                style={[s.keywordGenBtn, generatingKeyword && { opacity: 0.5 }]}
+                onPress={handleRandomKeyword}
+                disabled={generatingKeyword}
+              >
+                {generatingKeyword
+                  ? <ActivityIndicator size="small" color="#2CC985" />
+                  : <Text style={s.keywordGenBtnText}>✨ Random</Text>
+                }
+              </TouchableOpacity>
+            </View>
+
 
             <TouchableOpacity
               style={[s.generateBtn, generating && { opacity: 0.6 }]}
@@ -1008,6 +1058,31 @@ const s = StyleSheet.create({
   pickerSheetTitle: { color: "#F1C40F", fontSize: 17, fontWeight: "bold", marginBottom: 14, textAlign: "center" },
   pickerSheetItem: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: "#222" },
   pickerSheetItemText: { color: "#fff", fontSize: 16, textAlign: "center" },
+  keywordRow: { flexDirection: "row", gap: 8, alignItems: "center" },
+  keywordInput: {
+    flex: 1,
+    backgroundColor: "#0a1628",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: "#1a4a7a",
+    color: "#2CC985",
+    fontSize: 14,
+  },
+  keywordGenBtn: {
+    backgroundColor: "#1a4a7a",
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderWidth: 1,
+    borderColor: "#2CC985",
+    minWidth: 80,
+    alignItems: "center",
+  },
+  keywordGenBtnText: { color: "#2CC985", fontWeight: "700", fontSize: 13 },
+  keywordHint: { color: "#555", fontSize: 11, marginTop: 4, marginBottom: 4 },
+
 });
 
 // ─────────────────────────────────────────────
@@ -1076,5 +1151,7 @@ const rm = StyleSheet.create({
   bottom: 0,
   zIndex: 100,          // dưới tooltip (zIndex 999) nhưng trên content
   backgroundColor: "transparent",
+  
 },
+
 });
