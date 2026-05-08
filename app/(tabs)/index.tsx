@@ -640,10 +640,17 @@ export default function VocabularyLearnerUI() {
     try {
       const result = await localDict.translateToken(
         token, inputLang, outputLang,
-        () => learner.translateText(token, inputLang, outputLang)
+        async () => {
+          const res = await learner.translateText(token, inputLang, outputLang);
+          if (!res || res.startsWith("[Lỗi") || res.startsWith("❌") || res.startsWith("[Error")) {
+            throw new Error(res);
+          }
+          return res;
+        }
       );
       setTranslationPopup({ text: token, translation: result });
 
+      // Chỉ cache khi thành công
       setCurrentData((prev) => {
         if (!prev) return prev;
         return { ...prev, translation_cache: { ...(prev.translation_cache ?? {}), [token]: result } };
@@ -656,7 +663,9 @@ export default function VocabularyLearnerUI() {
         ).catch((e) => console.warn("[persist translation cache]", e));
       }
     } catch {
-      setTranslationPopup({ text: token, translation: "❌ Translation failed." });
+      // Không cache, xóa khỏi memCached nếu đã lỡ lưu
+      localDict.evictFromCache(token, inputLang, outputLang);
+      setTranslationPopup({ text: token, translation: "❌ Translation failed. Tap to retry." });
     } finally {
       inflight.current.delete(key);
     }

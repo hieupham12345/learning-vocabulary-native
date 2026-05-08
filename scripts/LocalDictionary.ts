@@ -85,9 +85,9 @@ export class LocalDictionary {
     }
 
     // 3. Check L3: Gọi API (LLM / External Service)
-    const apiTranslation = await apiFallback();
-    
-    // Lưu kết quả mới vào L1 và L2 để dùng cho các lần sau
+    const apiTranslation = await apiFallback(); // throws nếu lỗi -> không cache
+
+    // Chỉ lưu khi thành công
     this.addToMemoryCache(key, apiTranslation);
     this.saveToDB(key, apiTranslation);
 
@@ -130,6 +130,12 @@ export class LocalDictionary {
     return result;
   }
 
+  public evictFromCache(word: string, inputLang: string, outputLang: string) {
+    const key = this.generateKey(word, inputLang, outputLang);
+    this.memoryCache.delete(key);
+    this.db.runSync('DELETE FROM dictionary WHERE word_key = ?', [key]);
+  }
+
   // --- Quản lý Local DB ---
   private saveToDB(key: string, translation: string) {
     try {
@@ -158,5 +164,6 @@ export class LocalDictionary {
     this.memoryCache.set(key, translation);
   }
 }
+
 
 export const localDict = new LocalDictionary();
