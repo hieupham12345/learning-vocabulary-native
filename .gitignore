@@ -44,7 +44,5 @@ app-example
 /ios
 /android
 
-/scripts/config.ts
-
 npx expo prebuild
 npx eas build -p android --profile preview

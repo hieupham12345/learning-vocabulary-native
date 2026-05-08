@@ -29,21 +29,19 @@ import { useFocusEffect } from "expo-router";
 import * as SQLite from "expo-sqlite";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 import { callChatbot } from "../../scripts/chatbotService";
-import { OPENAI_API_KEY } from "../../scripts/config";
 import Constants from "expo-constants";
 import { localDict } from "../../scripts/LocalDictionary"; // ← NEW
+import { getSettings } from "@/scripts/settings-store";
 
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
-const GPT_API_KEY =
-  OPENAI_API_KEY ||
-  process.env.OPENAI_API_KEY ||
-  Constants.expoConfig?.extra?.OPENAI_API_KEY ||
-  (Constants.manifest as any)?.extra?.OPENAI_API_KEY ||
-  "";
-const AGENT = "chatgpt";
-const MODEL = "gpt-5.4-mini";
+
+const { api_key, model, agent } = getSettings();
+  
+const GPT_API_KEY = api_key;
+const AGENT = agent;
+const MODEL = model;
 
 const learner = new VocabularyLearner();
 

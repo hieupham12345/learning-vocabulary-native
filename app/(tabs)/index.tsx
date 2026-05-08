@@ -21,9 +21,7 @@ import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 import { SpeechCheck } from "@/app/SpeechCheck";
-import { OPENAI_API_KEY } from "@/scripts/config"; // đường dẫn giống như VocabularyLearner.ts
-
-const GPT_API_KEY = OPENAI_API_KEY; // Đảm bảo biến này được export từ config.ts và có giá trị hợp lệ
+import { getSettings } from "@/scripts/settings-store";
 
 import {
   initDatabase,
@@ -134,15 +132,12 @@ const DIFFICULTY_COLORS: Record<string, string> = {
   Easy: "#2ECC71", Medium: "#F1C40F", Hard: "#E67E22", "Super Hard": "#E74C3C",
 };
 
-// AsyncStorage chỉ dùng cho transient navigation (tồn tại qua 1-2 screen transition)
 const CURRENT_WORD_KEY        = "@current_word_data";
 const CURRENT_REVIEW_KEY      = "@current_quiz_review";
 const CURRENT_RETAKE_KEY      = "@current_quiz_retake";
 const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
 const LESSON_NAVIGATION_KEY   = "@lesson_navigation_context";
-
-// SQLite KV keys
-const KV_TTS_SPEED = "tts_speed";
+const KV_TTS_SPEED            = "tts_speed";
 
 const SPEED_MIN  = 1.0;
 const SPEED_MAX  = 2.0;
@@ -226,7 +221,6 @@ export default function VocabularyLearnerUI() {
   const [word, setWord]             = useState("");
   const [inputLang, setInputLang]   = useState("Chinese");
   const [outputLang, setOutputLang] = useState("Vietnamese");
-  const [genMode, setGenMode]       = useState<"easy" | "hard">("easy");
 
   const [dbReady, setDbReady]     = useState(false);
   const [dbError, setDbError]     = useState(false);
@@ -234,15 +228,15 @@ export default function VocabularyLearnerUI() {
 
   const [ttsSpeed, setTtsSpeed] = useState(1.5);
 
-  const [currentData, setCurrentData]             = useState<VocabDataLocal | null>(null);
-  const [allExamples, setAllExamples]             = useState<ExampleItem[]>([]);
-  const [exampleIndex, setExampleIndex]           = useState(0);
+  const [currentData, setCurrentData]                 = useState<VocabDataLocal | null>(null);
+  const [allExamples, setAllExamples]                 = useState<ExampleItem[]>([]);
+  const [exampleIndex, setExampleIndex]               = useState(0);
   const [romanizationVisible, setRomanizationVisible] = useState(false);
-  const [practiceSuccess, setPracticeSuccess]     = useState(0);
+  const [practiceSuccess, setPracticeSuccess]         = useState(0);
   const [practiceModalVisible, setPracticeModalVisible] = useState(false);
-  const [loading, setLoading]                     = useState(false);
-  const [quizLoading, setQuizLoading]             = useState(false);
-  const [status, setStatus]                       = useState("Initializing database...");
+  const [loading, setLoading]                         = useState(false);
+  const [quizLoading, setQuizLoading]                 = useState(false);
+  const [status, setStatus]                           = useState("Initializing database...");
 
   const [tokenizeStatus, setTokenizeStatus] = useState<Record<number, "loading" | "done" | "error">>({});
 
@@ -371,7 +365,6 @@ export default function VocabularyLearnerUI() {
             return;
           }
 
-          // Restore last session — dùng pointer → query SQLite (không đọc blob từ KV)
           if (!hasDataRef.current) {
             const last = await loadLastLearned();
             if (last) {
@@ -391,7 +384,6 @@ export default function VocabularyLearnerUI() {
     }, [dbReady])
   );
 
-  // ── Helpers để apply HistoryEntry vào state ──────────────────────────────
   const applyHistoryEntry = (entry: HistoryEntry, _prefix?: string) => {
     const examples = prepareExamples(entry.data as any);
     setCurrentData(entry.data as any);
@@ -413,7 +405,7 @@ export default function VocabularyLearnerUI() {
     setLoading(true);
     setStatus(`🔄 Learning '${w}'...`);
     try {
-      const data = await learner.learnWord(w, iLang, oLang, genMode);
+      const data = await learner.learnWord(w, iLang, oLang);
       if (!data.error) {
         const examples = prepareExamples(data);
         setCurrentData(data);
@@ -445,7 +437,7 @@ export default function VocabularyLearnerUI() {
   }, []);
 
   // ─────────────────────────────────────────────
-  // TOKENIZE — parallel, persist về SQLite
+  // TOKENIZE
   // ─────────────────────────────────────────────
   useEffect(() => {
     if (allExamples.length === 0 || !currentData) return;
@@ -517,14 +509,10 @@ export default function VocabularyLearnerUI() {
           if (abortToken.cancelled) return;
           try {
             await updateExamples(
-              snapshot.word,
-              snapshot.language.input,
-              snapshot.language.output,
+              snapshot.word, snapshot.language.input, snapshot.language.output,
               snapshot.examples
             );
-          } catch (e) {
-            console.warn("[tokenize persist]", e);
-          }
+          } catch (e) { console.warn("[tokenize persist]", e); }
         }, 0);
         return updated;
       });
@@ -533,6 +521,7 @@ export default function VocabularyLearnerUI() {
     return () => { abortToken.cancelled = true; tokenizingSet.current.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExamples.length, currentData?.word, refreshKey]);
+
   // ─────────────────────────────────────────────
   // LEARN WORD
   // ─────────────────────────────────────────────
@@ -550,19 +539,19 @@ export default function VocabularyLearnerUI() {
     }
 
     setLoading(true);
-    setStatus(`🔄 Learning '${word}' (${genMode} mode)...`);
+    setStatus(`🔄 Learning '${word}'...`);
     try {
-      const data = await learner.learnWord(word.trim(), inputLang, outputLang, genMode);
+      const data = await learner.learnWord(word.trim(), inputLang, outputLang);
       if (data.error) { Alert.alert("API Error", data.error); setStatus("Error occurred."); return; }
-        const examples = prepareExamples(data);
-        setCurrentData(data);
-        setAllExamples(examples);
-        setRefreshKey(k => k + 1);
-        setExampleIndex(0);
-        setTokenizeStatus({});
-        setRomanizationVisible(false);
-        setPracticeSuccess(0);
-        setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
+      const examples = prepareExamples(data);
+      setCurrentData(data);
+      setAllExamples(examples);
+      setRefreshKey(k => k + 1);
+      setExampleIndex(0);
+      setTokenizeStatus({});
+      setRomanizationVisible(false);
+      setPracticeSuccess(0);
+      setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
       await saveWord(word.trim(), inputLang, outputLang, data);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Unknown error");
@@ -578,7 +567,7 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   const navigateLesson = useCallback(async (direction: "prev" | "next") => {
     if (!lessonNav || !dbReady) return;
-    const { words, currentIndex, language, level } = lessonNav;
+    const { words, currentIndex, language } = lessonNav;
     const nextIndex = direction === "next" ? currentIndex + 1 : currentIndex - 1;
     if (nextIndex < 0 || nextIndex >= words.length) return;
 
@@ -593,8 +582,7 @@ export default function VocabularyLearnerUI() {
     const cached = await loadWordByInputLang(target.word, language);
     if (cached) {
       applyHistoryEntry(cached);
-      setStatus(`⚡ [${level}] ${nextIndex + 1}/${words.length} — from cache`);
-      // Cập nhật pointer mà không phải upsert toàn bộ blob
+      setStatus(`⚡ [${lessonNav.level}] ${nextIndex + 1}/${words.length} — from cache`);
       try {
         await kvSet("last_learned_ptr", {
           word: cached.word, input_lang: cached.input_lang,
@@ -604,9 +592,9 @@ export default function VocabularyLearnerUI() {
       if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
     } else {
       setLoading(true);
-      setStatus(`🔄 [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'...`);
+      setStatus(`🔄 [${lessonNav.level}] ${nextIndex + 1}/${words.length} — '${target.word}'...`);
       try {
-        const data = await learner.learnWord(target.word, language, outputLang, genMode);
+        const data = await learner.learnWord(target.word, language, outputLang);
         if (!data.error) {
           const examples = prepareExamples(data);
           setCurrentData(data);
@@ -616,9 +604,8 @@ export default function VocabularyLearnerUI() {
           setTokenizeStatus({});
           setRomanizationVisible(false);
           setPracticeSuccess(0);
-          setStatus(`✅ [${level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
+          setStatus(`✅ [${lessonNav.level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
           if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
-          // saveWord() tự cập nhật last_learned_ptr
           await saveWord(target.word, language, outputLang, data);
         }
       } catch (e) {
@@ -628,10 +615,10 @@ export default function VocabularyLearnerUI() {
         setLoading(false);
       }
     }
-  }, [lessonNav, outputLang, genMode, dbReady]);
+  }, [lessonNav, outputLang, dbReady]);
 
   // ─────────────────────────────────────────────
-  // TRANSLATION POPUP — persist cache sau mỗi lần dịch
+  // TRANSLATION POPUP
   // ─────────────────────────────────────────────
   const currentExample = allExamples[exampleIndex] ?? null;
 
@@ -642,7 +629,6 @@ export default function VocabularyLearnerUI() {
 
     speakText(token, inputLang, ttsSpeed);
 
-    // Kiểm tra trong-memory cache trước
     const memCached = currentData?.translation_cache?.[token];
     if (memCached) {
       setTranslationPopup({ text: token, translation: memCached });
@@ -658,16 +644,11 @@ export default function VocabularyLearnerUI() {
       );
       setTranslationPopup({ text: token, translation: result });
 
-      // Cập nhật in-memory cache
       setCurrentData((prev) => {
         if (!prev) return prev;
-        return {
-          ...prev,
-          translation_cache: { ...(prev.translation_cache ?? {}), [token]: result },
-        };
+        return { ...prev, translation_cache: { ...(prev.translation_cache ?? {}), [token]: result } };
       });
 
-      // Persist vào SQLite (fire and forget — không block UI)
       if (currentData) {
         updateTranslationCache(
           currentData.word, currentData.language.input, currentData.language.output,
@@ -704,22 +685,20 @@ export default function VocabularyLearnerUI() {
   const startQuizGeneration = async () => {
     setQuizSetupVisible(false);
     const quizLang = currentData?.language?.input ?? inputLang;
-
-    // Chỉ lấy danh sách tên từ — không load blob
-    const words = await listWordNames(quizLang, quizWordCount);
+    const words    = await listWordNames(quizLang, quizWordCount);
     if (words.length === 0) {
       Alert.alert("No Words Found", `No ${quizLang} words in history.`);
       return;
     }
 
-    const key = `quiz:${words.join("|")}:${quizQuestionCount}:${genMode}`;
+    const key = `quiz:${words.join("|")}:${quizQuestionCount}`;
     if (inflight.current.has(key)) { setStatus("⏳ Quiz đang được tạo…"); return; }
     inflight.current.add(key);
 
     setQuizLoading(true);
     setStatus(`🔄 Generating ${quizQuestionCount}-question ${quizLang} quiz...`);
     try {
-      const data = await learner.generateQuiz(words, quizLang, outputLang, quizQuestionCount, genMode);
+      const data = await learner.generateQuiz(words, quizLang, outputLang, quizQuestionCount);
       if (data.error) { Alert.alert("Error", data.error); return; }
       setQuizWindowData({ data, words, mode: "take" });
     } catch (e: any) {
@@ -799,7 +778,6 @@ export default function VocabularyLearnerUI() {
     );
   };
 
-  // ── DB error screen ──────────────────────────────────────────────────────
   if (dbError) {
     return (
       <View style={[styles.root, { justifyContent: "center", alignItems: "center", padding: 30 }]}>
@@ -833,6 +811,7 @@ export default function VocabularyLearnerUI() {
         </View>
 
         <View style={styles.card}>
+          {/* Word input + lesson nav */}
           <View style={styles.wordInputRow}>
             <TouchableOpacity
               style={[styles.lessonNavArrow, (!lessonNav || lessonNav.currentIndex <= 0) && styles.btnDisabled]}
@@ -871,6 +850,7 @@ export default function VocabularyLearnerUI() {
             </TouchableOpacity>
           </View>
 
+          {/* Language pickers */}
           <View style={styles.langRow}>
             <View style={styles.langBlock}>
               <Text style={styles.langLabel}>From</Text>
@@ -887,28 +867,31 @@ export default function VocabularyLearnerUI() {
             </View>
           </View>
 
-          <View style={styles.modeRow}>
-            <Text style={styles.modeLabel}>Mode:</Text>
-            {(["easy", "hard"] as const).map((m) => (
-              <TouchableOpacity key={m} style={[styles.modeBtn, genMode === m && styles.modeBtnActive]} onPress={() => setGenMode(m)}>
-                <Text style={[styles.modeBtnText, genMode === m && styles.modeBtnTextActive]}>
-                  {m === "easy" ? "😊 Easy" : "💪 Hard"}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
+          {/* Action buttons */}
           <View style={styles.actionRow}>
-            <TouchableOpacity style={[styles.btnPrimary, (!dbReady || loading) && styles.btnDisabled]} onPress={handleLearnWord} disabled={!dbReady || loading}>
-              {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.btnPrimaryText}>🎓 Learn Word</Text>}
+            <TouchableOpacity
+              style={[styles.btnPrimary, (!dbReady || loading) && styles.btnDisabled]}
+              onPress={handleLearnWord}
+              disabled={!dbReady || loading}
+            >
+              {loading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.btnPrimaryText}>🎓 Learn Word</Text>}
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.btnQuiz, (!dbReady || loading || quizLoading) && styles.btnDisabled]} onPress={handleGenerateQuiz} disabled={!dbReady || loading || quizLoading}>
-              {quizLoading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.btnPrimaryText}>📝 Quiz</Text>}
+            <TouchableOpacity
+              style={[styles.btnQuiz, (!dbReady || loading || quizLoading) && styles.btnDisabled]}
+              onPress={handleGenerateQuiz}
+              disabled={!dbReady || loading || quizLoading}
+            >
+              {quizLoading
+                ? <ActivityIndicator color="#fff" size="small" />
+                : <Text style={styles.btnPrimaryText}>📝 Quiz</Text>}
             </TouchableOpacity>
           </View>
           <Text style={styles.statusText}>{status}</Text>
         </View>
 
+        {/* ── Word data card ── */}
         {currentData && (
           <View style={styles.card}>
             <SpeedControl speed={ttsSpeed} onSpeedChange={handleSpeedChange} />
@@ -948,11 +931,19 @@ export default function VocabularyLearnerUI() {
             )}
 
             <View style={styles.navRow}>
-              <TouchableOpacity style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]} onPress={() => setExampleIndex((i) => Math.max(0, i - 1))} disabled={exampleIndex === 0}>
+              <TouchableOpacity
+                style={[styles.navBtn, exampleIndex === 0 && styles.btnDisabled]}
+                onPress={() => setExampleIndex((i) => Math.max(0, i - 1))}
+                disabled={exampleIndex === 0}
+              >
                 <Text style={styles.navBtnText}>⬅️ Prev</Text>
               </TouchableOpacity>
               <Text style={styles.counterText}>{exampleIndex + 1}/{allExamples.length}</Text>
-              <TouchableOpacity style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]} onPress={() => setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1))} disabled={exampleIndex >= allExamples.length - 1}>
+              <TouchableOpacity
+                style={[styles.navBtn, exampleIndex >= allExamples.length - 1 && styles.btnDisabled]}
+                onPress={() => setExampleIndex((i) => Math.min(allExamples.length - 1, i + 1))}
+                disabled={exampleIndex >= allExamples.length - 1}
+              >
                 <Text style={styles.navBtnText}>Next ➡️</Text>
               </TouchableOpacity>
             </View>
@@ -972,7 +963,7 @@ export default function VocabularyLearnerUI() {
         )}
       </ScrollView>
 
-      {/* MODALS */}
+      {/* ── MODALS ── */}
       <Modal visible={langPickerVisible} transparent animationType="slide">
         <Pressable style={styles.modalOverlay} onPress={() => setLangPickerVisible(false)}>
           <View style={styles.pickerSheet}>
@@ -990,7 +981,13 @@ export default function VocabularyLearnerUI() {
       </Modal>
 
       {memoryCheckVisible && (
-        <MemoryCheckModal examples={allExamples} inputLang={inputLang} ttsSpeed={ttsSpeed} onClose={() => setMemoryCheckVisible(false)} apiKey={GPT_API_KEY} />
+        <MemoryCheckModal
+          examples={allExamples}
+          inputLang={inputLang}
+          ttsSpeed={ttsSpeed}
+          onClose={() => setMemoryCheckVisible(false)}
+          apiKey={getSettings().chatgpt_api_key}
+        />
       )}
 
       <Modal visible={quizSetupVisible} transparent animationType="fade">
@@ -1002,26 +999,46 @@ export default function VocabularyLearnerUI() {
             </View>
             <Text style={styles.setupLabel}>Recent words to test: {quizWordCount} / {historyCount}</Text>
             <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}><Text style={styles.stepperText}>−</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.max(1, n - 1))}>
+                <Text style={styles.stepperText}>−</Text>
+              </TouchableOpacity>
               <Text style={styles.stepperValue}>{quizWordCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.min(historyCount, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizWordCount((n) => Math.min(historyCount, n + 1))}>
+                <Text style={styles.stepperText}>+</Text>
+              </TouchableOpacity>
             </View>
             <Text style={styles.setupLabel}>Number of questions: {quizQuestionCount}</Text>
             <View style={styles.stepperRow}>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}><Text style={styles.stepperText}>−</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.max(5, n - 1))}>
+                <Text style={styles.stepperText}>−</Text>
+              </TouchableOpacity>
               <Text style={styles.stepperValue}>{quizQuestionCount}</Text>
-              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(30, n + 1))}><Text style={styles.stepperText}>+</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setQuizQuestionCount((n) => Math.min(30, n + 1))}>
+                <Text style={styles.stepperText}>+</Text>
+              </TouchableOpacity>
             </View>
             <View style={styles.setupBtnRow}>
-              <TouchableOpacity style={styles.btnPrimary} onPress={startQuizGeneration}><Text style={styles.btnPrimaryText}>🚀 Generate Quiz</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.btnCancel} onPress={() => setQuizSetupVisible(false)}><Text style={styles.btnCancelText}>Cancel</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.btnPrimary} onPress={startQuizGeneration}>
+                <Text style={styles.btnPrimaryText}>🚀 Generate Quiz</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.btnCancel} onPress={() => setQuizSetupVisible(false)}>
+                <Text style={styles.btnCancelText}>Cancel</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
 
       {practiceModalVisible && (
-        <TypingPracticeModal example={currentExample} currentScore={practiceSuccess} onClose={() => setPracticeModalVisible(false)} onCorrect={() => setPracticeSuccess((n) => n + 1)} inputLang={inputLang} ttsSpeed={ttsSpeed} apiKey={GPT_API_KEY} />
+        <TypingPracticeModal
+          example={currentExample}
+          currentScore={practiceSuccess}
+          onClose={() => setPracticeModalVisible(false)}
+          onCorrect={() => setPracticeSuccess((n) => n + 1)}
+          inputLang={inputLang}
+          ttsSpeed={ttsSpeed}
+          apiKey={getSettings().chatgpt_api_key}
+        />
       )}
 
       {quizWindowData && (
@@ -1034,8 +1051,7 @@ export default function VocabularyLearnerUI() {
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              const saved = await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
-              return saved;
+              return await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
             } catch (e) {
               console.error("[QuizModal saveQuiz]", e);
               return undefined;
@@ -1050,7 +1066,7 @@ export default function VocabularyLearnerUI() {
 }
 
 // ─────────────────────────────────────────────
-// SUB-COMPONENTS
+// SUB-COMPONENTS (unchanged from original)
 // ─────────────────────────────────────────────
 function ColoredInput({ input, target, placeholder, onChangeText, autoFocus = false }: {
   input: string; target: string; placeholder?: string;
@@ -1100,9 +1116,7 @@ const overlayStyle = StyleSheet.create({
     fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
     top: 5,
   },
-  inputTransparentText: {},
 });
-
 
 function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
   if (!value || value === "N/A") return null;
@@ -1137,11 +1151,7 @@ function MemoryCheckModal({
     return () => clearTimeout(t);
   }, [idx]);
 
-  useEffect(() => {
-    setInput("");
-    setShowHint(false);
-    setSpeechKey(k => k + 1);
-  }, [idx]);
+  useEffect(() => { setInput(""); setShowHint(false); setSpeechKey(k => k + 1); }, [idx]);
 
   const advance = () => {
     const next = idx + 1;
@@ -1185,8 +1195,6 @@ function MemoryCheckModal({
                 <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
               </View>
             )}
-
-            {/* ── Tab switcher ── */}
             <View style={mcStyles.tabs}>
               <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
                 <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
@@ -1195,13 +1203,11 @@ function MemoryCheckModal({
                 <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
               </TouchableOpacity>
             </View>
-
             {tab === "typing" ? (
               <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
             ) : (
               <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
             )}
-
             <View style={styles.memCheckBtnRow}>
               <TouchableOpacity style={styles.hintBtn} onPressIn={() => setShowHint(true)} onPressOut={() => setShowHint(false)}>
                 <Text style={styles.hintBtnText}>💡 Hold for Hint</Text>
@@ -1267,8 +1273,6 @@ function TypingPracticeModal({
           <View style={styles.typingTargetBox}>
             <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
           </View>
-
-          {/* ── Tab switcher ── */}
           <View style={mcStyles.tabs}>
             <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
               <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
@@ -1277,13 +1281,11 @@ function TypingPracticeModal({
               <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
             </TouchableOpacity>
           </View>
-
           {tab === "typing" ? (
             <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
           ) : (
             <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
           )}
-
           {completed && (
             <View style={styles.typingSuccessBox}>
               <Text style={styles.typingSuccessText}>
@@ -1310,12 +1312,10 @@ function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSave
   outputLang: string;
 }) {
   const questions = quizData.quiz ?? [];
-  const [answers, setAnswers]   = useState<string[]>(pastAnswers ?? questions.map(() => ""));
+  const [answers, setAnswers]     = useState<string[]>(pastAnswers ?? questions.map(() => ""));
   const [submitted, setSubmitted] = useState(mode === "review");
-  const [score, setScore]       = useState(0);
+  const [score, setScore]         = useState(0);
   const [savedQuizId, setSavedQuizId] = useState<number | undefined>(quizId);
-
-  // explanations[i] = text đã load/fetch, null = chưa có, "loading" = đang fetch
   const [explanations, setExplanations] = useState<Record<number, string | "loading">>({});
 
   useEffect(() => {
@@ -1324,7 +1324,6 @@ function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSave
     }
   }, []);
 
-  // Load cached explanations khi có quizId (review từ history)
   useEffect(() => {
     if (!savedQuizId) return;
     loadQuizExplanations(savedQuizId).then((cached) => {
@@ -1354,7 +1353,6 @@ function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSave
         (q as any).word_tested ?? "", inputLang, outputLang
       );
       setExplanations(prev => ({ ...prev, [i]: text }));
-      // Persist nếu đã có quizId
       if (savedQuizId !== undefined) {
         saveQuizExplanation(savedQuizId, i, text).catch(() => {});
       }
@@ -1411,10 +1409,7 @@ function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSave
                 {submitted && (
                   <View style={{ marginTop: 10 }}>
                     {!expState ? (
-                      <TouchableOpacity
-                        style={styles.explainBtn}
-                        onPress={() => handleExplain(i)}
-                      >
+                      <TouchableOpacity style={styles.explainBtn} onPress={() => handleExplain(i)}>
                         <Text style={styles.explainBtnText}>💬 Explain</Text>
                       </TouchableOpacity>
                     ) : expState === "loading" ? (
@@ -1447,6 +1442,7 @@ function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSave
     </Modal>
   );
 }
+
 // ─────────────────────────────────────────────
 // STYLES
 // ─────────────────────────────────────────────
@@ -1466,12 +1462,6 @@ const styles = StyleSheet.create({
   langPicker: { backgroundColor: "#0f3460", borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: "#1a4a7a" },
   langPickerText: { color: "#2CC985", fontWeight: "600" },
   langArrow: { color: "#555", fontSize: 20, marginHorizontal: 12, alignSelf: "flex-end", marginBottom: 8 },
-  modeRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 10 },
-  modeLabel: { color: "#aaa", fontSize: 14, marginRight: 6 },
-  modeBtn: { paddingVertical: 7, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: "#333", backgroundColor: "#111" },
-  modeBtnActive: { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
-  modeBtnText: { color: "#888", fontSize: 13 },
-  modeBtnTextActive: { color: "#2CC985", fontWeight: "bold" },
   actionRow: { flexDirection: "row", gap: 10 },
   btnPrimary: { flex: 1, backgroundColor: "#1a4a7a", paddingVertical: 14, borderRadius: 10, alignItems: "center" },
   btnQuiz: { flex: 1, backgroundColor: "#6c3483", paddingVertical: 14, borderRadius: 10, alignItems: "center" },
@@ -1573,7 +1563,8 @@ const styles = StyleSheet.create({
   explainBtnText: { color: "#5DADE2", fontWeight: "600", fontSize: 13 },
   explainLoading: { flexDirection: "row", alignItems: "center", marginTop: 6 },
   explainLoadingText: { color: "#F39C12", fontSize: 13, fontStyle: "italic" },
-  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 4, borderLeftWidth: 3, borderLeftColor: "#F39C12" },  wordInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 8 },
+  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 4, borderLeftWidth: 3, borderLeftColor: "#F39C12" },
+  wordInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 8 },
   wordInput: { backgroundColor: "#0f3460", color: "#fff", borderRadius: 10, padding: 14, fontSize: 18, borderWidth: 1, borderColor: "#1a4a7a" },
   lessonNavArrow: { backgroundColor: "#1a4a7a", borderRadius: 10, width: 42, height: 74, alignItems: "center", justifyContent: "center" },
   lessonNavArrowText: { color: "#2CC985", fontSize: 18, fontWeight: "bold" },

@@ -62,7 +62,7 @@ function normalise(s: string): string {
 /**
  * Levenshtein distance between two strings.
  */
-function levenshtein(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
     Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
@@ -78,7 +78,7 @@ function levenshtein(a: string, b: string): number {
 /**
  * Character-level similarity ratio [0, 1].
  */
-function charSimilarity(a: string, b: string): number {
+export function charSimilarity(a: string, b: string): number {
   if (a.length === 0 && b.length === 0) return 1;
   const dist = levenshtein(a, b);
   return 1 - dist / Math.max(a.length, b.length);

@@ -41,7 +41,7 @@ export default function TabLayout() {
         name="lesson"
         options={{
           title: 'Lesson',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="book.fill" color={color} />, // icon sách
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="book.fill" color={color} />,
         }}
       />
       <Tabs.Screen
@@ -56,6 +56,13 @@ export default function TabLayout() {
         options={{
           title: 'Exam',
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="pencil" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="gearshape.fill" color={color} />,
         }}
       />
     </Tabs>

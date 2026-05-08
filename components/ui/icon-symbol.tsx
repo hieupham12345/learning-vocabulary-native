@@ -21,6 +21,7 @@ const MAPPING = {
   'list.bullet': 'list',
   'book.fill': 'menu-book', 
   'pencil': 'edit',
+  'gearshape.fill': 'settings',
 } as IconMapping;
 
 /**
