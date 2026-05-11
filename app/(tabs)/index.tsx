@@ -21,7 +21,7 @@ import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 import { SpeechCheck } from "@/app/SpeechCheck";
-import { getSettings } from "@/scripts/settings-store";
+import { getSettings, loadSettings, subscribeSettings } from "@/scripts/settings-store";
 
 import {
   initDatabase,
@@ -262,6 +262,10 @@ export default function VocabularyLearnerUI() {
 
   const [refreshKey, setRefreshKey] = useState(0);
 
+
+  const [apiKey, setApiKey] = useState("");
+
+  
   const hasDataRef       = useRef(false);
   const tokenizingSet    = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
@@ -272,10 +276,19 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   // DB INIT + MIGRATION
   // ─────────────────────────────────────────────
+
   useEffect(() => {
     let cancelled = false;
     const bootstrap = async () => {
       try {
+        // Load settings TRƯỚC, song song với DB init
+        const [_, settings] = await Promise.all([
+          initDatabase(),
+          loadSettings(),
+        ]);
+        
+        if (cancelled) return;
+        setApiKey(settings.chatgpt_api_key ?? "");
         const ok = await initDatabase();
         if (cancelled) return;
         if (!ok) { setDbError(true); setStatus("❌ Database init failed."); return; }
@@ -300,6 +313,15 @@ export default function VocabularyLearnerUI() {
     };
     bootstrap();
     return () => { cancelled = true; };
+  }, []);
+
+
+  // Thêm useEffect riêng để subscribe:
+  useEffect(() => {
+    const unsub = subscribeSettings((s) => {
+      setApiKey(s.chatgpt_api_key ?? "");
+    });
+    return unsub;
   }, []);
 
   // ─────────────────────────────────────────────
@@ -995,7 +1017,7 @@ export default function VocabularyLearnerUI() {
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
           onClose={() => setMemoryCheckVisible(false)}
-          apiKey={getSettings().chatgpt_api_key}
+          apiKey={apiKey}
         />
       )}
 
@@ -1046,7 +1068,7 @@ export default function VocabularyLearnerUI() {
           onCorrect={() => setPracticeSuccess((n) => n + 1)}
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
-          apiKey={getSettings().chatgpt_api_key}
+          apiKey={apiKey}
         />
       )}
 

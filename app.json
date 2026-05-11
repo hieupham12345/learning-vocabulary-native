@@ -41,7 +41,7 @@
           }
         }
       ],
-           ["expo-av", { "microphonePermission": "Allow this app to access your microphone." }]
+      ["expo-av", { "microphonePermission": "Allow this app to access your microphone." }]
 
     ],
     "experiments": {
