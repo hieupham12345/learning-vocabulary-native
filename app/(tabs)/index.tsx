@@ -228,6 +228,9 @@ export default function VocabularyLearnerUI() {
 
   const [ttsSpeed, setTtsSpeed] = useState(1.5);
 
+  const ttsSpeedRef = useRef(1.5);
+
+  
   const [currentData, setCurrentData]                 = useState<VocabDataLocal | null>(null);
   const [allExamples, setAllExamples]                 = useState<ExampleItem[]>([]);
   const [exampleIndex, setExampleIndex]               = useState(0);
