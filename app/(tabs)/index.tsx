@@ -13,6 +13,7 @@ import {
   KeyboardAvoidingView,
   Pressable,
   Dimensions,
+  Animated
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
@@ -268,7 +269,30 @@ export default function VocabularyLearnerUI() {
 
   const [apiKey, setApiKey] = useState("");
 
-  
+  const [isFlipped, setIsFlipped] = useState(false);
+  const flipAnim = useRef(new Animated.Value(0)).current;
+
+  const handleFlip = () => {
+    const toValue = isFlipped ? 0 : 1;
+    Animated.timing(flipAnim, {
+      toValue,
+      duration: 400,
+      useNativeDriver: true,
+    }).start();
+    setIsFlipped(v => !v);
+  };
+
+  const frontRotate = flipAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "180deg"],
+  });
+
+  const backRotate = flipAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["180deg", "360deg"],
+  });
+
+
   const hasDataRef       = useRef(false);
   const tokenizingSet    = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
@@ -938,29 +962,71 @@ export default function VocabularyLearnerUI() {
             {currentExample && (
               <View style={styles.exampleBox}>
                 <View style={styles.diffRow}>
-                  <Text style={styles.diffTag}>
-                    📊 Level:{" "}
-                    <Text style={{ color: DIFFICULTY_COLORS[currentExample.difficulty_tag] ?? "#fff" }}>
-                      {currentExample.difficulty_tag}
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                    
+                    <Text style={styles.diffTag}>
+                      {"📊 Level: "}
+                      <Text style={{ color: DIFFICULTY_COLORS[currentExample.difficulty_tag] ?? "#fff" }}>
+                        {currentExample.difficulty_tag}
+                      </Text>
                     </Text>
-                  </Text>
+                  </View>
                   <TTSButton onPress={() => speakText(currentExample.sentence, inputLang, ttsSpeed)} size={17} label="🔊 Play" />
                 </View>
-                <View style={styles.sentenceBox}>{renderSentenceTokens()}</View>
-                {translationPopup && (
-                  <View style={[styles.translationPopup, { maxHeight: 250 }]} onTouchStart={(e) => e.stopPropagation()}>
-                    <View style={styles.translationPopupHeader}>
-                      <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
-                      <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
+
+                <TouchableOpacity
+                  activeOpacity={1}
+                  onPress={handleFlip}
+                  style={styles.flipCardWrapper}
+                >
+                  <Animated.View
+                    style={[
+                      styles.flipCardFace,
+                      { transform: [{ rotateY: frontRotate }] },
+                      isFlipped && { position: "absolute", top: 0, left: 0, right: 0 },
+                    ]}
+                    pointerEvents={isFlipped ? "none" : "auto"}
+                  >
+                    <View style={styles.sentenceBox}>{renderSentenceTokens()}</View>
+                    {translationPopup && !isFlipped && (
+                      <View style={[styles.translationPopup, { maxHeight: 250 }]} onTouchStart={(e) => e.stopPropagation()}>
+                        <View style={styles.translationPopupHeader}>
+                          <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
+                          <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
+                        </View>
+                        <ScrollView nestedScrollEnabled style={{ marginVertical: 8 }} showsVerticalScrollIndicator>
+                          <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
+                        </ScrollView>
+                        <TouchableOpacity onPress={() => setTranslationPopup(null)}>
+                          <Text style={styles.translationPopupClose}>✕ Close</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </Animated.View>
+
+                  <Animated.View
+                    style={[
+                      styles.flipCardFace,
+                      styles.flipCardBack,
+                      { transform: [{ rotateY: backRotate }] },
+                      !isFlipped && { position: "absolute", top: 0, left: 0, right: 0 },
+                    ]}
+                    pointerEvents={!isFlipped ? "none" : "auto"}
+                  >
+                    <View style={[styles.sentenceBox, { backgroundColor: "#0d2a1a" }]}>
+                      <Text style={[styles.sentenceText, { color: "#2ECC71" }]}>
+                        {currentExample.translation}
+                      </Text>
                     </View>
-                    <ScrollView nestedScrollEnabled style={{ marginVertical: 8 }} showsVerticalScrollIndicator>
-                      <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
-                    </ScrollView>
-                    <TouchableOpacity onPress={() => setTranslationPopup(null)}>
-                      <Text style={styles.translationPopupClose}>✕ Close</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
+                    {currentExample.explanation ? (
+                      <View style={{ marginTop: 8 }}>
+                        <Text style={{ color: "#5DADE2", fontSize: 13 }}>
+                          {`💡 ${currentExample.explanation}`}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </Animated.View>
+                </TouchableOpacity>
               </View>
             )}
 
@@ -1603,6 +1669,29 @@ const styles = StyleSheet.create({
   lessonNavArrow: { backgroundColor: "#1a4a7a", borderRadius: 10, width: 42, height: 74, alignItems: "center", justifyContent: "center" },
   lessonNavArrowText: { color: "#2CC985", fontSize: 18, fontWeight: "bold" },
   lessonNavHint: { color: "#5DADE2", fontSize: 11, marginTop: 4, marginLeft: 4, fontStyle: "italic" },
+
+    flipIconBtn: {
+    padding: 4,
+    borderRadius: 6,
+    backgroundColor: "#1a3a5c",
+  },
+  flipIconText: {
+    fontSize: 16,
+  },
+  flipCardWrapper: {
+    minHeight: 80,
+    position: "relative",
+  },
+  flipCardFace: {
+    backfaceVisibility: "hidden",
+    width: "100%",
+  },
+  flipCardFront: {
+    // default position (in flow)
+  },
+  flipCardBack: {
+    padding: 4,
+  },
 });
 
 const mcStyles = StyleSheet.create({
@@ -1611,4 +1700,5 @@ const mcStyles = StyleSheet.create({
   tabActive:     { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
   tabText:       { color: "#888", fontWeight: "600", fontSize: 14 },
   tabTextActive: { color: "#2CC985" },
+  
 });
