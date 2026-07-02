@@ -7,22 +7,33 @@ import {
   ScrollView,
   Modal,
   ActivityIndicator,
-  StyleSheet,
   Alert,
   Platform,
   KeyboardAvoidingView,
   Pressable,
-  Dimensions,
   Animated
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { VocabularyLearner } from "../../scripts/VocabularyLearner";
-import * as Speech from "expo-speech";
 import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
-import { SpeechCheck } from "@/app/SpeechCheck";
-import { getSettings, loadSettings, subscribeSettings } from "@/scripts/settings-store";
+import { loadSettings, subscribeSettings } from "@/scripts/settings-store";
+import { speakText } from "@/scripts/tts";
+import { DIFFICULTY_COLORS } from "@/constants/palette";
+import type {
+  ExampleItem,
+  VocabDataLocal,
+  QuizData,
+  QuizHistoryEntryLocal,
+} from "@/types/vocab";
+import { SpeedControl } from "@/components/vocab/SpeedControl";
+import { TTSButton } from "@/components/vocab/TTSButton";
+import { OverviewRow } from "@/components/vocab/OverviewRow";
+import { MemoryCheckModal } from "@/components/vocab/MemoryCheckModal";
+import { TypingPracticeModal } from "@/components/vocab/TypingPracticeModal";
+import { QuizModal } from "@/components/vocab/QuizModal";
+import { styles } from "@/components/vocab/styles";
 
 import {
   initDatabase,
@@ -35,103 +46,15 @@ import {
   updateExamples,
   updateTranslationCache,
   saveQuiz,
-  saveQuizExplanation,
-  loadQuizExplanations,
   kvGet,
   kvSet,
   type HistoryEntry,
-  type QuizHistoryEntry,
 } from "@/scripts/ExampleDB";
-
-// ─────────────────────────────────────────────
-// TTS
-// ─────────────────────────────────────────────
-const LANG_TO_TTS: Record<string, string> = {
-  Chinese: "zh-CN", English: "en-US", Japanese: "ja-JP",
-  Vietnamese: "vi-VN", Korean: "ko-KR",
-};
-
-async function speakText(text: string, language: string, rate = 1.0): Promise<void> {
-  const langCode = LANG_TO_TTS[language] ?? "en-US";
-  try {
-    const isSpeaking = await Speech.isSpeakingAsync();
-    if (isSpeaking) Speech.stop();
-    Speech.speak(text, { language: langCode, rate, pitch: 1.0, volume: 1.0 });
-  } catch (err: any) {
-    console.warn("TTS error:", err);
-    Alert.alert("TTS Error", "Could not play audio.");
-  }
-}
-
-// ─────────────────────────────────────────────
-// TYPES
-// ─────────────────────────────────────────────
-interface ExampleItem {
-  sentence: string;
-  romanization?: string | null;
-  translation: string;
-  explanation: string;
-  grammar_points: string[];
-  difficulty_justification: string;
-  difficulty_tag: string;
-  tokens?: string[];
-}
-
-interface VocabOverview {
-  meaning: string;
-  romanization?: string | null;
-  part_of_speech: string;
-  register: string;
-  usage: string;
-  notes: string;
-  collocations: string[];
-}
-
-interface VocabDataLocal {
-  word: string;
-  language: { input: string; output: string };
-  overview: VocabOverview;
-  examples: {
-    easy?: ExampleItem[];
-    medium?: ExampleItem[];
-    hard?: ExampleItem[];
-    super_hard?: ExampleItem[];
-  };
-  translation_cache?: Record<string, string>;
-}
-
-interface QuizQuestion {
-  difficulty: string;
-  dimension: string;
-  question: string;
-  options: string[];
-  answer: string;
-  explanation: string;
-}
-
-interface QuizData {
-  words: string[];
-  quiz: QuizQuestion[];
-}
-
-interface QuizHistoryEntryLocal {
-  id?: number;
-  words: string[];
-  score: number;
-  total: number;
-  timestamp: string;
-  quiz_data: QuizData;
-  user_answers: string[];
-  input_lang?: string;
-}
 
 // ─────────────────────────────────────────────
 // CONSTANTS
 // ─────────────────────────────────────────────
 const LANGUAGE_OPTIONS = ["Chinese", "English", "Japanese", "Vietnamese", "Korean"];
-const DIFFICULTY_COLORS: Record<string, string> = {
-  Easy: "#2ECC71", Medium: "#F1C40F", Hard: "#E67E22", "Super Hard": "#E74C3C",
-};
 
 const CURRENT_WORD_KEY        = "@current_word_data";
 const CURRENT_REVIEW_KEY      = "@current_quiz_review";
@@ -139,10 +62,6 @@ const CURRENT_RETAKE_KEY      = "@current_quiz_retake";
 const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
 const LESSON_NAVIGATION_KEY   = "@lesson_navigation_context";
 const KV_TTS_SPEED            = "tts_speed";
-
-const SPEED_MIN  = 1.0;
-const SPEED_MAX  = 2.0;
-const SPEED_STEP = 0.1;
 
 const learner = new VocabularyLearner();
 
@@ -177,43 +96,6 @@ const flatIndexToBucketPos = (
   }
   return null;
 };
-
-// ─────────────────────────────────────────────
-// SPEED CONTROL
-// ─────────────────────────────────────────────
-function SpeedControl({ speed, onSpeedChange }: { speed: number; onSpeedChange: (v: number) => void }) {
-  const dec = () => { const n = Math.round((speed - SPEED_STEP) * 10) / 10; if (n >= SPEED_MIN) onSpeedChange(n); };
-  const inc = () => { const n = Math.round((speed + SPEED_STEP) * 10) / 10; if (n <= SPEED_MAX) onSpeedChange(n); };
-  return (
-    <View style={sc.row}>
-      <Text style={sc.icon}>🐢</Text>
-      <TouchableOpacity style={[sc.btn, speed <= SPEED_MIN && sc.disabled]} onPress={dec} disabled={speed <= SPEED_MIN}>
-        <Text style={sc.btnText}>−</Text>
-      </TouchableOpacity>
-      <Text style={sc.value}>{speed.toFixed(1)}x</Text>
-      <TouchableOpacity style={[sc.btn, speed >= SPEED_MAX && sc.disabled]} onPress={inc} disabled={speed >= SPEED_MAX}>
-        <Text style={sc.btnText}>+</Text>
-      </TouchableOpacity>
-      <Text style={sc.icon}>🐇</Text>
-    </View>
-  );
-}
-const sc = StyleSheet.create({
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: "#0d1b2a", borderRadius: 10, paddingVertical: 8, paddingHorizontal: 14, marginBottom: 10 },
-  icon: { fontSize: 18 },
-  btn: { backgroundColor: "#1a4a7a", borderRadius: 6, paddingHorizontal: 14, paddingVertical: 4 },
-  disabled: { opacity: 0.3 },
-  btnText: { color: "#fff", fontSize: 20, fontWeight: "bold" },
-  value: { color: "#2CC985", fontWeight: "bold", fontSize: 17, minWidth: 48, textAlign: "center" },
-});
-
-function TTSButton({ onPress, size = 20, label }: { onPress: () => void; size?: number; label?: string }) {
-  return (
-    <TouchableOpacity style={styles.ttsBtn} onPress={onPress}>
-      <Text style={[styles.ttsBtnText, { fontSize: size }]}>{label ?? "🔊"}</Text>
-    </TouchableOpacity>
-  );
-}
 
 // ─────────────────────────────────────────────
 // MAIN COMPONENT
@@ -433,15 +315,26 @@ export default function VocabularyLearnerUI() {
     }, [dbReady])
   );
 
-  const applyHistoryEntry = (entry: HistoryEntry, _prefix?: string) => {
-    const examples = prepareExamples(entry.data as any);
-    setCurrentData(entry.data as any);
+  /**
+   * Load a VocabData object into the screen and reset all per-word view state.
+   * Single source for the 4 flows (learn, cached-load, lesson-nav, restore)
+   * that used to repeat this same block of setState calls.
+   * Returns the flattened examples so callers can build a status message.
+   */
+  const applyVocabData = (data: VocabDataLocal): ExampleItem[] => {
+    const examples = prepareExamples(data);
+    setCurrentData(data);
     setAllExamples(examples);
     setRefreshKey(k => k + 1);
     setExampleIndex(0);
     setTokenizeStatus({});
     setRomanizationVisible(false);
     setPracticeSuccess(0);
+    return examples;
+  };
+
+  const applyHistoryEntry = (entry: HistoryEntry, _prefix?: string) => {
+    applyVocabData(entry.data as any);
     if (entry.output_lang) setOutputLang(entry.output_lang);
   };
 
@@ -456,14 +349,7 @@ export default function VocabularyLearnerUI() {
     try {
       const data = await learner.learnWord(w, iLang, oLang);
       if (!data.error) {
-        const examples = prepareExamples(data);
-        setCurrentData(data);
-        setAllExamples(examples);
-        setRefreshKey(k => k + 1);
-        setExampleIndex(0);
-        setTokenizeStatus({});
-        setRomanizationVisible(false);
-        setPracticeSuccess(0);
+        applyVocabData(data);
         setStatus(`✅ Ready to learn '${w}'!`);
         await saveWord(w, iLang, oLang, data);
         if (onSuccess) await onSuccess();
@@ -592,14 +478,7 @@ export default function VocabularyLearnerUI() {
     try {
       const data = await learner.learnWord(word.trim(), inputLang, outputLang);
       if (data.error) { Alert.alert("API Error", data.error); setStatus("Error occurred."); return; }
-      const examples = prepareExamples(data);
-      setCurrentData(data);
-      setAllExamples(examples);
-      setRefreshKey(k => k + 1);
-      setExampleIndex(0);
-      setTokenizeStatus({});
-      setRomanizationVisible(false);
-      setPracticeSuccess(0);
+      const examples = applyVocabData(data);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
       await saveWord(word.trim(), inputLang, outputLang, data);
     } catch (e: any) {
@@ -645,14 +524,7 @@ export default function VocabularyLearnerUI() {
       try {
         const data = await learner.learnWord(target.word, language, outputLang);
         if (!data.error) {
-          const examples = prepareExamples(data);
-          setCurrentData(data);
-          setAllExamples(examples);
-          setRefreshKey(k => k + 1);
-          setExampleIndex(0);
-          setTokenizeStatus({});
-          setRomanizationVisible(false);
-          setPracticeSuccess(0);
+          applyVocabData(data);
           setStatus(`✅ [${lessonNav.level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
           if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
           await saveWord(target.word, language, outputLang, data);
@@ -1164,541 +1036,3 @@ export default function VocabularyLearnerUI() {
     </KeyboardAvoidingView>
   );
 }
-
-// ─────────────────────────────────────────────
-// SUB-COMPONENTS (unchanged from original)
-// ─────────────────────────────────────────────
-function ColoredInput({ input, target, placeholder, onChangeText, autoFocus = false }: {
-  input: string; target: string; placeholder?: string;
-  onChangeText: (t: string) => void; autoFocus?: boolean;
-}) {
-  return (
-    <View style={overlayStyle.wrapper}>
-      <TextInput
-        style={overlayStyle.input}
-        value={input}
-        onChangeText={onChangeText}
-        placeholder={placeholder ?? "Type here..."}
-        placeholderTextColor="#555"
-        multiline
-        autoCapitalize="none"
-        autoCorrect={false}
-        autoFocus={autoFocus}
-      />
-      {input.length > 0 && (
-        <Text style={overlayStyle.text} pointerEvents="none">
-          {input.split("").map((char, i) => (
-            <Text key={i} style={{ color: i < target.length && char === target[i] ? "#2ECC71" : "#E74C3C" }}>{char}</Text>
-          ))}
-        </Text>
-      )}
-    </View>
-  );
-}
-
-const overlayStyle = StyleSheet.create({
-  wrapper: { backgroundColor: "#111", borderRadius: 10, borderWidth: 1, borderColor: "#333", justifyContent: "center", marginTop: 12, position: "relative" },
-  text: {
-    position: "absolute", top: 5, left: 0, right: 0, bottom: 0,
-    fontSize: 16, lineHeight: 22,
-    paddingTop: Platform.OS === "android" ? 12 : 14,
-    paddingHorizontal: 14,
-    zIndex: 2, flexWrap: "wrap",
-    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
-  },
-  input: {
-    fontSize: 16, lineHeight: 22,
-    padding: 14,
-    paddingTop: Platform.OS === "android" ? 12 : 14,
-    color: "transparent",
-    minHeight: 60,
-    textAlignVertical: "top",
-    fontFamily: Platform.OS === "ios" ? "Courier" : "monospace",
-    top: 5,
-  },
-});
-
-function OverviewRow({ icon, label, value }: { icon: string; label: string; value: string }) {
-  if (!value || value === "N/A") return null;
-  return (
-    <View style={styles.overviewRow}>
-      <Text style={styles.overviewKey}>{icon} {label}: </Text>
-      <Text style={styles.overviewValue}>{value}</Text>
-    </View>
-  );
-}
-
-function MemoryCheckModal({
-  examples, inputLang, ttsSpeed, onClose, apiKey = "",
-}: {
-  examples: ExampleItem[]; inputLang: string; ttsSpeed: number;
-  onClose: () => void; apiKey?: string;
-}) {
-  const [shuffled]        = useState<ExampleItem[]>(() => [...examples].sort(() => Math.random() - 0.5));
-  const [idx, setIdx]     = useState(0);
-  const [input, setInput] = useState("");
-  const [showHint, setShowHint] = useState(false);
-  const [done, setDone]   = useState(false);
-  const [tab, setTab]     = useState<"typing" | "speech">("typing");
-  const [speechKey, setSpeechKey] = useState(0);
-
-  const current = shuffled[idx];
-  const target  = current?.sentence?.trim() ?? "";
-
-  useEffect(() => {
-    if (!current?.sentence) return;
-    const t = setTimeout(() => speakText(current.sentence, inputLang, ttsSpeed), 350);
-    return () => clearTimeout(t);
-  }, [idx]);
-
-  useEffect(() => { setInput(""); setShowHint(false); setSpeechKey(k => k + 1); }, [idx]);
-
-  const advance = () => {
-    const next = idx + 1;
-    if (next >= shuffled.length) setDone(true);
-    else setTimeout(() => setIdx(next), 500);
-  };
-
-  const handleTypingChange = (text: string) => {
-    setInput(text);
-    if (text === target && target.length > 0) advance();
-  };
-
-  const handleSpeechResult = (passed: boolean) => {
-    if (passed) setTimeout(() => advance(), 1200);
-  };
-
-  return (
-    <Modal visible animationType="slide">
-      <View style={styles.memCheckRoot}>
-        <View style={styles.memCheckHeader}>
-          <Text style={styles.memCheckTitle}>🧠 Memory Check</Text>
-          <TouchableOpacity onPress={onClose}><Text style={styles.memCheckClose}>✕</Text></TouchableOpacity>
-        </View>
-        {done ? (
-          <View style={styles.memCheckDone}>
-            <Text style={styles.memCheckDoneText}>🎉 Amazing! You've recalled all examples!</Text>
-            <TouchableOpacity style={[styles.btnPrimary, { flex: 0, paddingHorizontal: 40 }]} onPress={onClose}>
-              <Text style={styles.btnPrimaryText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <ScrollView contentContainerStyle={styles.memCheckBody}>
-            <Text style={styles.memCheckProgress}>Progress: {idx + 1}/{shuffled.length}</Text>
-            <View style={styles.memCheckTtsRow}>
-              <Text style={styles.memCheckInstruction}>Translate back to the original language:</Text>
-              <TTSButton onPress={() => speakText(current?.sentence ?? "", inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
-            </View>
-            <Text style={styles.memCheckTranslation}>{current?.translation}</Text>
-            {showHint && (
-              <View style={[styles.typingTargetBox, { marginBottom: 12, borderColor: "#E67E22" }]}>
-                <Text style={[styles.typingTargetText, { color: "#E67E22" }]}>{target}</Text>
-              </View>
-            )}
-            <View style={mcStyles.tabs}>
-              <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
-                <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[mcStyles.tab, tab === "speech" && mcStyles.tabActive]} onPress={() => setTab("speech")}>
-                <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
-              </TouchableOpacity>
-            </View>
-            {tab === "typing" ? (
-              <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
-            ) : (
-              <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
-            )}
-            <View style={styles.memCheckBtnRow}>
-              <TouchableOpacity style={styles.hintBtn} onPressIn={() => setShowHint(true)} onPressOut={() => setShowHint(false)}>
-                <Text style={styles.hintBtnText}>💡 Hold for Hint</Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-        )}
-      </View>
-    </Modal>
-  );
-}
-
-function TypingPracticeModal({
-  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed, apiKey = "",
-}: {
-  example: ExampleItem | null; currentScore: number;
-  onClose: () => void; onCorrect: () => void;
-  inputLang: string; ttsSpeed: number; apiKey?: string;
-}) {
-  const [input,     setInput]     = useState("");
-  const [completed, setCompleted] = useState(false);
-  const [tab,       setTab]       = useState<"typing" | "speech">("typing");
-  const [speechKey, setSpeechKey] = useState(0);
-
-  const target = example?.sentence?.trim() ?? "";
-
-  useEffect(() => {
-    if (!example?.sentence) return;
-    const t = setTimeout(() => speakText(example.sentence, inputLang, ttsSpeed), 350);
-    return () => clearTimeout(t);
-  }, [example?.sentence]);
-
-  const handleTypingChange = (text: string) => {
-    setInput(text);
-    if (text === target && target.length > 0) {
-      onCorrect();
-      setCompleted(true);
-      setTimeout(() => { setInput(""); setCompleted(false); setSpeechKey(k => k + 1); }, 700);
-    }
-  };
-
-  const handleSpeechResult = (passed: boolean) => {
-    if (passed) {
-      onCorrect();
-      setCompleted(true);
-      setTimeout(() => { setCompleted(false); setSpeechKey(k => k + 1); }, 1500);
-    }
-  };
-
-  return (
-    <Modal visible animationType="slide">
-      <View style={styles.typingRoot}>
-        <View style={styles.typingHeader}>
-          <Text style={styles.typingTitle}>⌨️ Typing Practice</Text>
-          <TouchableOpacity onPress={onClose}><Text style={styles.memCheckClose}>✕</Text></TouchableOpacity>
-        </View>
-        <ScrollView contentContainerStyle={styles.typingBody}>
-          <Text style={styles.typingProgress}>Score: {currentScore}</Text>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <Text style={styles.typingPrompt}>Type the sentence exactly:</Text>
-            <TTSButton onPress={() => speakText(target, inputLang, ttsSpeed)} size={17} label="🔊 Replay" />
-          </View>
-          <View style={styles.typingTargetBox}>
-            <Text style={styles.typingTargetText}>{target || "No example available"}</Text>
-          </View>
-          <View style={mcStyles.tabs}>
-            <TouchableOpacity style={[mcStyles.tab, tab === "typing" && mcStyles.tabActive]} onPress={() => setTab("typing")}>
-              <Text style={[mcStyles.tabText, tab === "typing" && mcStyles.tabTextActive]}>⌨️ Typing</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[mcStyles.tab, tab === "speech" && mcStyles.tabActive]} onPress={() => setTab("speech")}>
-              <Text style={[mcStyles.tabText, tab === "speech" && mcStyles.tabTextActive]}>🎙 Speech</Text>
-            </TouchableOpacity>
-          </View>
-          {tab === "typing" ? (
-            <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
-          ) : (
-            <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
-          )}
-          {completed && (
-            <View style={styles.typingSuccessBox}>
-              <Text style={styles.typingSuccessText}>
-                {tab === "speech" ? "✅ Great pronunciation!" : "✅ Correct! Keep going."}
-              </Text>
-            </View>
-          )}
-          <TouchableOpacity style={[styles.btnPrimary, { marginTop: 16 }]} onPress={onClose}>
-            <Text style={styles.btnPrimaryText}>Close Practice</Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </View>
-    </Modal>
-  );
-}
-
-function QuizModal({ quizData, words, mode, pastAnswers, quizId, onClose, onSaveResult, inputLang, outputLang }: {
-  quizData: QuizData; words: string[]; mode: "take" | "review";
-  pastAnswers?: string[];
-  quizId?: number;
-  onClose: () => void;
-  onSaveResult: (entry: QuizHistoryEntryLocal) => Promise<number | undefined>;
-  inputLang: string;
-  outputLang: string;
-}) {
-  const questions = quizData.quiz ?? [];
-  const [answers, setAnswers]     = useState<string[]>(pastAnswers ?? questions.map(() => ""));
-  const [submitted, setSubmitted] = useState(mode === "review");
-  const [score, setScore]         = useState(0);
-  const [savedQuizId, setSavedQuizId] = useState<number | undefined>(quizId);
-  const [explanations, setExplanations] = useState<Record<number, string | "loading">>({});
-
-  useEffect(() => {
-    if (mode === "review") {
-      setScore(questions.reduce((acc, q, i) => acc + (pastAnswers?.[i] === q.answer ? 1 : 0), 0));
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!savedQuizId) return;
-    loadQuizExplanations(savedQuizId).then((cached) => {
-      if (Object.keys(cached).length > 0) setExplanations(cached);
-    }).catch(() => {});
-  }, [savedQuizId]);
-
-  const handleSubmit = async () => {
-    const s = questions.reduce((acc, q, i) => acc + (answers[i] === q.answer ? 1 : 0), 0);
-    setScore(s);
-    setSubmitted(true);
-    const newId = await onSaveResult({
-      words, score: s, total: questions.length,
-      timestamp: new Date().toISOString(), quiz_data: quizData, user_answers: answers,
-    });
-    if (newId !== undefined) setSavedQuizId(newId);
-    Alert.alert("Result", `You got ${s} out of ${questions.length} correct!`);
-  };
-
-  const handleExplain = async (i: number) => {
-    if (explanations[i] && explanations[i] !== "loading") return;
-    setExplanations(prev => ({ ...prev, [i]: "loading" }));
-    const q = questions[i];
-    try {
-      const text = await learner.explainQuizQuestion(
-        q.question, q.options, q.answer,
-        (q as any).word_tested ?? "", inputLang, outputLang
-      );
-      setExplanations(prev => ({ ...prev, [i]: text }));
-      if (savedQuizId !== undefined) {
-        saveQuizExplanation(savedQuizId, i, text).catch(() => {});
-      }
-    } catch (e: any) {
-      setExplanations(prev => ({ ...prev, [i]: `❌ ${e.message}` }));
-    }
-  };
-
-  const isReview = mode === "review";
-  const diffColor = (d: string) =>
-    ({ easy: "#2ECC71", medium: "#F1C40F", hard: "#E67E22", super_hard: "#E74C3C", very_hard: "#E74C3C" }[d] ?? "#fff");
-
-  return (
-    <Modal visible animationType="slide">
-      <View style={styles.quizRoot}>
-        <View style={styles.quizHeader}>
-          <Text style={styles.quizTitle} numberOfLines={1}>
-            {isReview ? "🔍 Review Quiz" : "📝 Quiz"}: {words.slice(0, 3).join(", ")}
-          </Text>
-          <TouchableOpacity onPress={onClose}><Text style={styles.memCheckClose}>✕</Text></TouchableOpacity>
-        </View>
-        <ScrollView contentContainerStyle={styles.quizBody}>
-          {questions.map((q, i) => {
-            const userAns   = answers[i];
-            const isCorrect = submitted && userAns === q.answer;
-            const isWrong   = submitted && userAns !== q.answer;
-            const expState  = explanations[i];
-            return (
-              <View key={i} style={[
-                styles.quizQuestionCard,
-                submitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
-                submitted && isWrong   && { borderColor: "#E74C3C", borderWidth: 2 },
-              ]}>
-                <Text style={[styles.quizQuestionText, { color: diffColor(q.difficulty) }]}>Q{i + 1}: {q.question}</Text>
-                {q.options.map((opt) => {
-                  const val          = opt[0];
-                  const isSelected   = userAns === val;
-                  const isCorrectOpt = submitted && val === q.answer;
-                  const isWrongOpt   = submitted && isSelected && val !== q.answer;
-                  return (
-                    <View key={val} style={styles.quizOptionWrapper}>
-                      <TouchableOpacity
-                        style={[styles.quizOption, isSelected && !submitted && styles.quizOptionSelected, isCorrectOpt && styles.quizOptionCorrect, isWrongOpt && styles.quizOptionWrong]}
-                        onPress={() => { if (submitted) return; const u = [...answers]; u[i] = val; setAnswers(u); }}
-                        disabled={submitted}
-                      >
-                        <Text style={[styles.quizOptionText, isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" }, isWrongOpt && { color: "#E74C3C" }]}>{opt}</Text>
-                      </TouchableOpacity>
-                      {submitted && isCorrectOpt && <Text style={styles.quizOptionMeta}>Correct answer</Text>}
-                      {submitted && isWrongOpt   && <Text style={styles.quizOptionMeta}>Your answer</Text>}
-                    </View>
-                  );
-                })}
-                {submitted && (
-                  <View style={{ marginTop: 10 }}>
-                    {!expState ? (
-                      <TouchableOpacity style={styles.explainBtn} onPress={() => handleExplain(i)}>
-                        <Text style={styles.explainBtnText}>💬 Explain</Text>
-                      </TouchableOpacity>
-                    ) : expState === "loading" ? (
-                      <View style={styles.explainLoading}>
-                        <ActivityIndicator size="small" color="#F39C12" />
-                        <Text style={styles.explainLoadingText}> Generating explanation…</Text>
-                      </View>
-                    ) : (
-                      <View style={styles.quizExplanationBox}>
-                        <Text style={styles.quizExplanation}>{expState}</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-              </View>
-            );
-          })}
-        </ScrollView>
-        {!submitted && (
-          <TouchableOpacity style={styles.quizSubmitBtn} onPress={handleSubmit}>
-            <Text style={styles.btnPrimaryText}>✅ Submit & Grade</Text>
-          </TouchableOpacity>
-        )}
-        {submitted && (
-          <View style={styles.quizScoreBar}>
-            <Text style={styles.quizScoreText}>🎯 Score: {score}/{questions.length}</Text>
-          </View>
-        )}
-      </View>
-    </Modal>
-  );
-}
-
-// ─────────────────────────────────────────────
-// STYLES
-// ─────────────────────────────────────────────
-const { width } = Dimensions.get("window");
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#1a1a2e" },
-  scroll: { flex: 1 },
-  scrollContent: { padding: 16, paddingBottom: 40 },
-  header: { alignItems: "center", paddingVertical: 20 },
-  headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
-  migrationBanner: { flexDirection: "row", alignItems: "center", marginTop: 8, backgroundColor: "#0d1b2a", borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8 },
-  migrationText: { color: "#F1C40F", fontSize: 13 },
-  card: { backgroundColor: "#16213e", borderRadius: 16, padding: 16, marginBottom: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
-  langRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
-  langBlock: { flex: 1 },
-  langLabel: { color: "#aaa", fontSize: 12, marginBottom: 4 },
-  langPicker: { backgroundColor: "#0f3460", borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: "#1a4a7a" },
-  langPickerText: { color: "#2CC985", fontWeight: "600" },
-  langArrow: { color: "#555", fontSize: 20, marginHorizontal: 12, alignSelf: "flex-end", marginBottom: 8 },
-  actionRow: { flexDirection: "row", gap: 10 },
-  btnPrimary: { flex: 1, backgroundColor: "#1a4a7a", paddingVertical: 14, borderRadius: 10, alignItems: "center" },
-  btnQuiz: { flex: 1, backgroundColor: "#6c3483", paddingVertical: 14, borderRadius: 10, alignItems: "center" },
-  btnDisabled: { opacity: 0.5 },
-  btnPrimaryText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
-  btnCancel: { flex: 1, backgroundColor: "#333", paddingVertical: 14, borderRadius: 10, alignItems: "center" },
-  btnCancelText: { color: "#aaa", fontWeight: "bold", fontSize: 15 },
-  statusText: { color: "#777", fontSize: 12, marginTop: 10, textAlign: "center" },
-  wordRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginBottom: 12, gap: 12 },
-  wordDisplay: { fontSize: 36, fontWeight: "bold", color: "#2CC985" },
-  ttsBtn: { padding: 6, borderRadius: 8 },
-  ttsBtnText: { color: "#F1C40F" },
-  overviewBox: { backgroundColor: "#0d1b2a", borderRadius: 10, padding: 12, marginBottom: 12 },
-  overviewRow: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  rowWrap: { flexDirection: "row", flexWrap: "wrap", marginBottom: 6 },
-  overviewKey: { color: "#5DADE2", fontWeight: "bold", fontSize: 13 },
-  overviewValue: { color: "#E0E0E0", fontSize: 13, flex: 1, flexWrap: "wrap" },
-  collocRow: { flexDirection: "row", flexWrap: "wrap" },
-  collocToken: { color: "#E67E22", textDecorationLine: "underline", fontSize: 13 },
-  exampleBox: { backgroundColor: "#0a1628", borderRadius: 10, padding: 12, marginBottom: 10 },
-  diffRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-  diffTag: { color: "#5DADE2", fontWeight: "bold", fontSize: 13 },
-  sentenceBox: { backgroundColor: "#111d30", borderRadius: 8, padding: 12, marginBottom: 8 },
-  sentenceText: { fontSize: 20, color: "#F1C40F", fontWeight: "bold", lineHeight: 32, flexWrap: "wrap" },
-  tokenText: { color: "#F1C40F", textDecorationLine: "underline" },
-  tokenizingRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
-  tokenizingText: { color: "#888", fontSize: 14, fontStyle: "italic" },
-  translationPopup: { backgroundColor: "#1a1a1a", borderRadius: 10, padding: 12, borderWidth: 1, borderColor: "#2ECC71", marginTop: 8 },
-  translationPopupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  translationPopupWord: { color: "#888", fontSize: 12, fontStyle: "italic" },
-  translationPopupText: { color: "#2ECC71", fontSize: 14, fontWeight: "bold" },
-  translationPopupClose: { color: "#E74C3C", marginTop: 8, textAlign: "right" },
-  navRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", marginVertical: 10, gap: 20 },
-  navBtn: { backgroundColor: "#1a4a7a", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 20 },
-  navBtnText: { color: "#fff", fontWeight: "bold" },
-  counterText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
-  controlRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
-  ctrlBtn: { flex: 1, backgroundColor: "#4a235a", borderRadius: 8, paddingVertical: 12, alignItems: "center", justifyContent: "center", minHeight: 44 },
-  ctrlBtnMemory: { backgroundColor: "#7d3c1b" },
-  ctrlBtnPractice: { backgroundColor: "#2d3f6f" },
-  ctrlBtnText: { color: "#fff", fontSize: 14, fontWeight: "700", letterSpacing: 0.2, textAlign: "center" },
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
-  pickerSheet: { backgroundColor: "#16213e", borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
-  pickerTitle: { color: "#F1C40F", fontSize: 18, fontWeight: "bold", marginBottom: 16, textAlign: "center" },
-  pickerItem: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "#222" },
-  pickerItemText: { color: "#fff", fontSize: 16, textAlign: "center" },
-  memCheckRoot: { flex: 1, backgroundColor: "#1a1a2e" },
-  memCheckHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#222", backgroundColor: "#16213e" },
-  memCheckTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold" },
-  memCheckClose: { color: "#E74C3C", fontSize: 22, fontWeight: "bold" },
-  memCheckBody: { padding: 20 },
-  memCheckProgress: { color: "#5DADE2", fontWeight: "bold", marginBottom: 10 },
-  memCheckTtsRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
-  memCheckInstruction: { color: "#aaa", fontSize: 14, flex: 1 },
-  memCheckTranslation: { color: "#F1C40F", fontSize: 18, fontStyle: "italic", marginBottom: 16, lineHeight: 26 },
-  memCheckBtnRow: { flexDirection: "row", gap: 10, marginTop: 16 },
-  memCheckDone: { flex: 1, justifyContent: "center", alignItems: "center", padding: 30 },
-  memCheckDoneText: { color: "#2ECC71", fontSize: 18, textAlign: "center", marginBottom: 30, lineHeight: 28 },
-  hintBtn: { flex: 1, backgroundColor: "#5d6d7e", borderRadius: 8, paddingVertical: 10, alignItems: "center" },
-  hintBtnText: { color: "#fff", fontWeight: "600" },
-  typingRoot: { flex: 1, backgroundColor: "#1a1a2e" },
-  typingHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, borderBottomWidth: 1, borderBottomColor: "#222", backgroundColor: "#16213e" },
-  typingTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold" },
-  typingBody: { padding: 20 },
-  typingProgress: { color: "#5DADE2", fontWeight: "bold", marginBottom: 10 },
-  typingPrompt: { color: "#aaa", fontSize: 14, marginBottom: 10 },
-  typingTargetBox: { backgroundColor: "#111", borderRadius: 10, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: "#333" },
-  typingTargetText: { color: "#fff", fontSize: 16, lineHeight: 22 },
-  typingSuccessBox: { backgroundColor: "#223d1f", padding: 12, borderRadius: 10, marginTop: 12, marginBottom: 16 },
-  typingSuccessText: { color: "#2ECC71", fontSize: 16, textAlign: "center" },
-  quizSetupBox: { backgroundColor: "#16213e", borderRadius: 20, padding: 24, margin: 24, alignSelf: "center", width: width - 48 },
-  quizSetupTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold", marginBottom: 12, textAlign: "center" },
-  quizLangBadge: { backgroundColor: "#0d2a1a", borderRadius: 8, borderWidth: 1, borderColor: "#2CC985", paddingVertical: 6, paddingHorizontal: 12, alignSelf: "center", marginBottom: 14 },
-  quizLangBadgeText: { color: "#2CC985", fontSize: 13, fontWeight: "600" },
-  setupLabel: { color: "#aaa", fontSize: 14, marginBottom: 8, marginTop: 10 },
-  stepperRow: { flexDirection: "row", alignItems: "center", gap: 20, marginBottom: 4 },
-  stepperBtn: { backgroundColor: "#1a4a7a", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 },
-  stepperText: { color: "#fff", fontSize: 20, fontWeight: "bold" },
-  stepperValue: { color: "#2CC985", fontSize: 22, fontWeight: "bold", minWidth: 40, textAlign: "center" },
-  setupBtnRow: { flexDirection: "row", gap: 10, marginTop: 24 },
-  quizRoot: { flex: 1, backgroundColor: "#1a1a2e" },
-  quizHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", padding: 20, backgroundColor: "#16213e", borderBottomWidth: 1, borderBottomColor: "#222" },
-  quizTitle: { color: "#F1C40F", fontSize: 18, fontWeight: "bold", flex: 1 },
-  quizBody: { padding: 16, paddingBottom: 40 },
-  quizQuestionCard: { backgroundColor: "#16213e", borderRadius: 12, padding: 16, marginBottom: 16 },
-  quizQuestionText: { fontSize: 17, fontWeight: "bold", marginBottom: 14, lineHeight: 24 },
-  quizOptionWrapper: { marginBottom: 6 },
-  quizOption: { backgroundColor: "#0a1628", borderRadius: 8, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 2, borderWidth: 1, borderColor: "#222" },
-  quizOptionSelected: { borderColor: "#5DADE2", backgroundColor: "#112244" },
-  quizOptionCorrect: { borderColor: "#2ECC71", backgroundColor: "#0d3320" },
-  quizOptionWrong: { borderColor: "#E74C3C", backgroundColor: "#2d0a0a" },
-  quizOptionText: { color: "#ccc", fontSize: 15 },
-  quizOptionMeta: { color: "#aaa", fontSize: 12, marginTop: 4, marginLeft: 12 },
-  quizExplanation: { color: "#F39C12", fontSize: 13, fontStyle: "italic", marginTop: 10, lineHeight: 20, backgroundColor: "#1a1a1a", padding: 10, borderRadius: 6 },
-  quizSubmitBtn: { backgroundColor: "#27ae60", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
-  quizScoreBar: { backgroundColor: "#1a4a7a", margin: 16, paddingVertical: 16, borderRadius: 12, alignItems: "center" },
-  quizScoreText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
-  explainBtn: { backgroundColor: "#1a3a5c", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14, alignSelf: "flex-start", marginTop: 2, borderWidth: 1, borderColor: "#2980b9" },
-  explainBtnText: { color: "#5DADE2", fontWeight: "600", fontSize: 13 },
-  explainLoading: { flexDirection: "row", alignItems: "center", marginTop: 6 },
-  explainLoadingText: { color: "#F39C12", fontSize: 13, fontStyle: "italic" },
-  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 4, borderLeftWidth: 3, borderLeftColor: "#F39C12" },
-  wordInputRow: { flexDirection: "row", alignItems: "center", marginBottom: 14, gap: 8 },
-  wordInput: { backgroundColor: "#0f3460", color: "#fff", borderRadius: 10, padding: 14, fontSize: 18, borderWidth: 1, borderColor: "#1a4a7a" },
-  lessonNavArrow: { backgroundColor: "#1a4a7a", borderRadius: 10, width: 42, height: 74, alignItems: "center", justifyContent: "center" },
-  lessonNavArrowText: { color: "#2CC985", fontSize: 18, fontWeight: "bold" },
-  lessonNavHint: { color: "#5DADE2", fontSize: 11, marginTop: 4, marginLeft: 4, fontStyle: "italic" },
-
-    flipIconBtn: {
-    padding: 4,
-    borderRadius: 6,
-    backgroundColor: "#1a3a5c",
-  },
-  flipIconText: {
-    fontSize: 16,
-  },
-  flipCardWrapper: {
-    minHeight: 80,
-    position: "relative",
-  },
-  flipCardFace: {
-    backfaceVisibility: "hidden",
-    width: "100%",
-  },
-  flipCardFront: {
-    // default position (in flow)
-  },
-  flipCardBack: {
-    padding: 4,
-  },
-});
-
-const mcStyles = StyleSheet.create({
-  tabs:          { flexDirection: "row", gap: 10, marginTop: 16, marginBottom: 4 },
-  tab:           { flex: 1, paddingVertical: 10, borderRadius: 10, alignItems: "center", backgroundColor: "#0d1b2a", borderWidth: 1, borderColor: "#1a3a5c" },
-  tabActive:     { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
-  tabText:       { color: "#888", fontWeight: "600", fontSize: 14 },
-  tabTextActive: { color: "#2CC985" },
-  
-});

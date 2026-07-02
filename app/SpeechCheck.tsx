@@ -33,6 +33,7 @@ import {
   Alert,
 } from "react-native";
 import { Audio } from "expo-av";
+import { Palette } from "@/constants/palette";
 
 // ─── Language → Whisper language code ────────────────────────────────────────
 const LANG_TO_WHISPER: Record<string, string> = {
@@ -212,13 +213,13 @@ async function transcribeWhisper(
 
 export function DiffView({ result }: { result: CompareResult }) {
   const pct = Math.round(result.score * 100);
-  const color = result.passed ? "#2ECC71" : result.score >= 0.6 ? "#F1C40F" : "#E74C3C";
+  const color = result.passed ? Palette.success : result.score >= 0.6 ? Palette.accent : Palette.danger;
 
   const STATUS_COLORS: Record<DiffToken["status"], string> = {
-    correct: "#2ECC71",
-    wrong:   "#E74C3C",
-    missing: "#E74C3C",
-    extra:   "#E67E22",
+    correct: Palette.success,
+    wrong:   Palette.danger,
+    missing: Palette.danger,
+    extra:   Palette.hard,
   };
 
   return (
@@ -237,7 +238,7 @@ export function DiffView({ result }: { result: CompareResult }) {
         {result.transcriptDiff.map((tok, i) => (
           <Text
             key={i}
-            style={[dv.tok, { color: STATUS_COLORS[tok.status] ?? "#fff" }]}
+            style={[dv.tok, { color: STATUS_COLORS[tok.status] ?? Palette.textPrimary }]}
           >
             {tok.text}
             {tok.status === "extra"   ? " ✗" : ""}
@@ -254,7 +255,7 @@ export function DiffView({ result }: { result: CompareResult }) {
         {result.targetDiff.map((tok, i) => (
           <Text
             key={i}
-            style={[dv.tok, { color: STATUS_COLORS[tok.status] ?? "#fff" }]}
+            style={[dv.tok, { color: STATUS_COLORS[tok.status] ?? Palette.textPrimary }]}
           >
             {tok.text}
             {tok.status === "missing" ? " ✗" : ""}
@@ -265,9 +266,9 @@ export function DiffView({ result }: { result: CompareResult }) {
       {/* Legend */}
       <View style={dv.legend}>
         {[
-          { color: "#2ECC71", label: "Correct" },
-          { color: "#E74C3C", label: "Wrong / Missing" },
-          { color: "#E67E22", label: "Extra" },
+          { color: Palette.success, label: "Correct" },
+          { color: Palette.danger, label: "Wrong / Missing" },
+          { color: Palette.hard, label: "Extra" },
         ].map(({ color: c, label }) => (
           <View key={label} style={dv.legendItem}>
             <View style={[dv.dot, { backgroundColor: c }]} />
@@ -280,18 +281,18 @@ export function DiffView({ result }: { result: CompareResult }) {
 }
 
 const dv = StyleSheet.create({
-  root:         { backgroundColor: "#0d1b2a", borderRadius: 12, padding: 14, marginTop: 10, borderWidth: 1, borderColor: "#1a3a5c" },
+  root:         { backgroundColor: Palette.panel, borderRadius: 12, padding: 14, marginTop: 10, borderWidth: 1, borderColor: Palette.border },
   scoreBadge:   { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, borderWidth: 2, borderRadius: 10, paddingVertical: 8, marginBottom: 12 },
   scoreNum:     { fontSize: 26, fontWeight: "bold" },
   scoreLabel:   { fontSize: 16, fontWeight: "bold" },
-  sectionLabel: { color: "#5DADE2", fontWeight: "bold", fontSize: 12, marginBottom: 4, marginTop: 6 },
+  sectionLabel: { color: Palette.info, fontWeight: "bold", fontSize: 12, marginBottom: 4, marginTop: 6 },
   diffRow:      { flexDirection: "row", flexWrap: "wrap", gap: 4, marginBottom: 6 },
   tok:          { fontSize: 16, fontWeight: "600", lineHeight: 24 },
-  empty:        { color: "#555", fontStyle: "italic", fontSize: 14 },
+  empty:        { color: Palette.textDim, fontStyle: "italic", fontSize: 14 },
   legend:       { flexDirection: "row", gap: 14, marginTop: 8, flexWrap: "wrap" },
   legendItem:   { flexDirection: "row", alignItems: "center", gap: 4 },
   dot:          { width: 8, height: 8, borderRadius: 4 },
-  legendText:   { color: "#888", fontSize: 11 },
+  legendText:   { color: Palette.textFaint, fontSize: 11 },
 });
 
 // ─── SpeechCheck Component ────────────────────────────────────────────────────
@@ -395,8 +396,8 @@ export function SpeechCheck({
 
         {state === "processing" && (
           <View style={[sc2.micBtn, sc2.micBtnProcessing]}>
-            <ActivityIndicator color="#F1C40F" size="small" />
-            <Text style={[sc2.micLabel, { color: "#F1C40F" }]}>Transcribing…</Text>
+            <ActivityIndicator color={Palette.accent} size="small" />
+            <Text style={[sc2.micLabel, { color: Palette.accent }]}>Transcribing…</Text>
           </View>
         )}
 
@@ -425,17 +426,17 @@ function RecordingPulse() {
     return () => clearInterval(id);
   }, []);
   const dots = ["●", "●●", "●●●"][frame];
-  return <Text style={{ color: "#E74C3C", fontSize: 20, letterSpacing: 2 }}>{dots}</Text>;
+  return <Text style={{ color: Palette.danger, fontSize: 20, letterSpacing: 2 }}>{dots}</Text>;
 }
 
 const sc2 = StyleSheet.create({
   root:              { marginTop: 10 },
   row:               { flexDirection: "row", justifyContent: "center" },
-  micBtn:            { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "#0f3460", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 20, borderWidth: 1, borderColor: "#1a4a7a" },
-  micBtnRecording:   { backgroundColor: "#2d0a0a", borderColor: "#E74C3C" },
-  micBtnProcessing:  { backgroundColor: "#1a1a00", borderColor: "#F1C40F" },
-  micBtnReset:       { backgroundColor: "#112244", borderColor: "#5DADE2" },
+  micBtn:            { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: Palette.inputBg, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 20, borderWidth: 1, borderColor: Palette.primary },
+  micBtnRecording:   { backgroundColor: "#2d0a0a", borderColor: Palette.danger },
+  micBtnProcessing:  { backgroundColor: "#1a1a00", borderColor: Palette.accent },
+  micBtnReset:       { backgroundColor: "#112244", borderColor: Palette.info },
   micIcon:           { fontSize: 20 },
-  micLabel:          { color: "#fff", fontWeight: "600", fontSize: 14 },
-  errText:           { color: "#E74C3C", fontSize: 12, marginTop: 8, textAlign: "center" },
+  micLabel:          { color: Palette.textPrimary, fontWeight: "600", fontSize: 14 },
+  errText:           { color: Palette.danger, fontSize: 12, marginTop: 8, textAlign: "center" },
 });

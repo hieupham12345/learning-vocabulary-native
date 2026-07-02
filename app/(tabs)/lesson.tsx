@@ -13,6 +13,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { database, Vocabulary } from "@/scripts/VocabularyDB";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
+import { Palette } from "@/constants/palette";
 
 const PENDING_LESSON_WORD_KEY = "@pending_lesson_word";
 const LESSON_NAVIGATION_KEY = "@lesson_navigation_context";
@@ -140,7 +141,7 @@ export default function LessonScreen() {
               <Ionicons
                 name={expanded[lang] ? "chevron-up" : "chevron-down"}
                 size={22}
-                color="#F1C40F"
+                color={Palette.accent}
               />
             </TouchableOpacity>
 
@@ -192,7 +193,7 @@ export default function LessonScreen() {
                 onEndReachedThreshold={0.5} 
                 ListFooterComponent={
                   isLoadingMore ? (
-                    <ActivityIndicator size="small" color="#F1C40F" style={{ marginVertical: 10 }} />
+                    <ActivityIndicator size="small" color={Palette.accent} style={{ marginVertical: 10 }} />
                   ) : null
                 }
                 initialNumToRender={15}
@@ -220,7 +221,7 @@ export default function LessonScreen() {
                       <Ionicons 
                         name={isLearned ? "checkmark-circle" : "arrow-forward-circle-outline"} 
                         size={20} 
-                        color={isLearned ? "#2CC985" : "#555"} 
+                        color={isLearned ? Palette.brand : Palette.textDim} 
                       />
                     </TouchableOpacity>
                   );
@@ -239,12 +240,12 @@ export default function LessonScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1a1a2e" },
+  container: { flex: 1, backgroundColor: Palette.bg },
   containerContent: { flexGrow: 1, paddingBottom: 24 },
   header: { alignItems: "center", paddingVertical: 20 },
-  headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
+  headerTitle: { fontSize: 26, fontWeight: "bold", color: Palette.accent },
   card: {
-    backgroundColor: "#16213e", 
+    backgroundColor: Palette.card, 
     borderRadius: 16, 
     padding: 16, 
     marginHorizontal: 16,
@@ -257,8 +258,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     paddingVertical: 4,
   },
-  languageText: { fontSize: 18, fontWeight: "bold", color: "#fff" },
-  levelList: { paddingTop: 12, marginTop: 8, borderTopWidth: 1, borderTopColor: "#0a1628" },
+  languageText: { fontSize: 18, fontWeight: "bold", color: Palette.textPrimary },
+  levelList: { paddingTop: 12, marginTop: 8, borderTopWidth: 1, borderTopColor: Palette.inset },
   levelItem: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -266,10 +267,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 8,
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     marginBottom: 8,
   },
-  levelText: { color: "#fff", fontWeight: "600", fontSize: 15 },
+  levelText: { color: Palette.textPrimary, fontWeight: "600", fontSize: 15 },
 
   // MODAL STYLES
   modalOverlay: {
@@ -282,7 +283,7 @@ const styles = StyleSheet.create({
   modalContent: {
     width: "100%",
     maxHeight: "85%",
-    backgroundColor: "#16213e",
+    backgroundColor: Palette.card,
     borderRadius: 24,
     padding: 20,
   },
@@ -293,19 +294,19 @@ const styles = StyleSheet.create({
     marginBottom: 20 
   },
   modalTitle: { 
-    color: "#F1C40F", 
+    color: Palette.accent, 
     fontSize: 18, 
     fontWeight: "bold", 
     flex: 1 
   },
-  modalCloseIcon: { color: "#fff", fontSize: 22, fontWeight: "bold" },
+  modalCloseIcon: { color: Palette.textPrimary, fontSize: 22, fontWeight: "bold" },
   
   wordList: { flexShrink: 1, width: "100%", marginBottom: 16 },
   wordListContent: { paddingBottom: 10 },
   
   // WORD ITEM STYLES
   wordItem: {
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     borderRadius: 12,
     padding: 15,
     marginBottom: 10,
@@ -313,11 +314,11 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     borderLeftWidth: 4,
-    borderLeftColor: "#F1C40F", // Màu vàng cho từ chưa học
+    borderLeftColor: Palette.accent, // Màu vàng cho từ chưa học
   },
   wordItemLearned: {
     backgroundColor: "#112240", 
-    borderLeftColor: "#2CC985", // Màu xanh cho từ đã học
+    borderLeftColor: Palette.brand, // Màu xanh cho từ đã học
     opacity: 0.7,
   },
   wordMainInfo: {
@@ -325,7 +326,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     flex: 1,
   },
-  wordText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  wordText: { color: Palette.textPrimary, fontSize: 16, fontWeight: "700" },
   wordTextLearned: { color: "#94a3b8" },
   
   badge: {
@@ -336,18 +337,18 @@ const styles = StyleSheet.create({
     marginLeft: 10,
   },
   badgeText: {
-    color: "#2CC985",
+    color: Palette.brand,
     fontSize: 10,
     fontWeight: "bold",
     textTransform: "uppercase",
   },
 
-  emptyText: { color: "#555", textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
+  emptyText: { color: Palette.textDim, textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
   btnPrimary: { 
-    backgroundColor: "#1a4a7a", 
+    backgroundColor: Palette.primary, 
     borderRadius: 12, 
     paddingVertical: 14, 
     alignItems: "center" 
   },
-  btnPrimaryText: { color: "#fff", fontWeight: "700", fontSize: 16 },
+  btnPrimaryText: { color: Palette.textPrimary, fontWeight: "700", fontSize: 16 },
 });

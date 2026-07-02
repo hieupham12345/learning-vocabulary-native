@@ -28,6 +28,7 @@ import {
   HistoryMeta,
   QuizHistoryEntry,
 } from "@/scripts/ExampleDB";
+import { Palette } from "@/constants/palette";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "expo-router";
 import { ActivityIndicator } from "react-native";
@@ -345,11 +346,11 @@ export default function HistoryScreen() {
                       key={index}
                       style={[
                         styles.quizQuestionCard,
-                        quizSubmitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
-                        quizSubmitted && isWrong && { borderColor: "#E74C3C", borderWidth: 2 },
+                        quizSubmitted && isCorrect && { borderColor: Palette.success, borderWidth: 2 },
+                        quizSubmitted && isWrong && { borderColor: Palette.danger, borderWidth: 2 },
                       ]}
                     >
-                      <Text style={[styles.quizQuestionText, { color: "#F1C40F" }]}>
+                      <Text style={[styles.quizQuestionText, { color: Palette.accent }]}>
                         Q{index + 1}: {question.question}
                       </Text>
                       {question.options.map((opt: string) => {
@@ -373,8 +374,8 @@ export default function HistoryScreen() {
                               <Text
                                 style={[
                                   styles.quizOptionText,
-                                  isCorrectOpt && { color: "#2ECC71", fontWeight: "bold" },
-                                  isWrongOpt && { color: "#E74C3C" },
+                                  isCorrectOpt && { color: Palette.success, fontWeight: "bold" },
+                                  isWrongOpt && { color: Palette.danger },
                                 ]}
                               >
                                 {opt}
@@ -401,7 +402,7 @@ export default function HistoryScreen() {
                         );
                         if (expState === "loading") return (
                           <View style={styles.explainLoading}>
-                            <ActivityIndicator size="small" color="#F39C12" />
+                            <ActivityIndicator size="small" color={Palette.warn} />
                             <Text style={styles.explainLoadingText}> Generating explanation…</Text>
                           </View>
                         );
@@ -443,68 +444,68 @@ export default function HistoryScreen() {
 // STYLES (giữ nguyên)
 // ─────────────────────────────────────────────
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1a1a2e" },
+  container: { flex: 1, backgroundColor: Palette.bg },
   containerContent: { flexGrow: 1, paddingBottom: 24 },
   header: { alignItems: "center", paddingVertical: 20 },
-  headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
+  headerTitle: { fontSize: 26, fontWeight: "bold", color: Palette.accent },
   card: {
-    backgroundColor: "#16213e", borderRadius: 16, padding: 16, margin: 16,
+    backgroundColor: Palette.card, borderRadius: 16, padding: 16, margin: 16,
     shadowColor: "#000", shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
   },
   tabRow: { flexDirection: "row", marginBottom: 12, gap: 8 },
-  tab: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#0a1628", alignItems: "center" },
-  tabActive: { backgroundColor: "#1a4a7a" },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: Palette.inset, alignItems: "center" },
+  tabActive: { backgroundColor: Palette.primary },
   tabText: { color: "#777", fontWeight: "600" },
-  tabTextActive: { color: "#2CC985" },
+  tabTextActive: { color: Palette.brand },
   historyList: { maxHeight: Dimensions.get("window").height * 0.55, marginBottom: 8 },
   historyListContent: { paddingBottom: 8 },
   historyItem: {
     paddingVertical: 12, paddingHorizontal: 12,
-    borderRadius: 8, backgroundColor: "#0a1628", marginBottom: 8,
+    borderRadius: 8, backgroundColor: Palette.inset, marginBottom: 8,
   },
   historyEntryText: { marginBottom: 10 },
-  historyWord: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  historyWord: { color: Palette.textPrimary, fontSize: 15, fontWeight: "600" },
   historyLang: { color: "#777", fontSize: 12, marginTop: 4 },
   quizActionRow: { flexDirection: "row", gap: 8, flexWrap: "wrap" },
   quizActionBtn: { flex: 1, paddingVertical: 8, borderRadius: 8, alignItems: "center" },
-  reviewBtn: { backgroundColor: "#1a4a7a" },
+  reviewBtn: { backgroundColor: Palette.primary },
   retakeBtn: { backgroundColor: "#7d3c1b" },
-  quizActionBtnText: { color: "#fff", fontWeight: "700" },
-  emptyText: { color: "#555", textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
+  quizActionBtnText: { color: Palette.textPrimary, fontWeight: "700" },
+  emptyText: { color: Palette.textDim, textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
   clearBtn: { backgroundColor: "#922b21", borderRadius: 8, paddingVertical: 12, marginTop: 12, alignItems: "center" },
-  clearBtnText: { color: "#fff", fontWeight: "bold" },
+  clearBtnText: { color: Palette.textPrimary, fontWeight: "bold" },
   modalOverlay: {
     position: "absolute", top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "center", alignItems: "center", padding: 16,
   },
-  quizModalBox: { width: "100%", height: "90%", backgroundColor: "#16213e", borderRadius: 20, padding: 18, overflow: "hidden" },
-  quizModalTitle: { color: "#F1C40F", fontSize: 20, fontWeight: "bold", marginBottom: 12, textAlign: "center" },
+  quizModalBox: { width: "100%", height: "90%", backgroundColor: Palette.card, borderRadius: 20, padding: 18, overflow: "hidden" },
+  quizModalTitle: { color: Palette.accent, fontSize: 20, fontWeight: "bold", marginBottom: 12, textAlign: "center" },
   quizModalBodyWrapper: { flex: 1, width: "100%", marginBottom: 12 },
   quizModalBody: { flex: 1, width: "100%" },
   quizModalBodyContent: { paddingBottom: 16 },
-  quizQuestionCard: { backgroundColor: "#0a1628", borderRadius: 12, padding: 14, marginBottom: 12 },
+  quizQuestionCard: { backgroundColor: Palette.inset, borderRadius: 12, padding: 14, marginBottom: 12 },
   quizHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },
-  memCheckClose: { color: "#fff", fontSize: 20, fontWeight: "bold" },
+  memCheckClose: { color: Palette.textPrimary, fontSize: 20, fontWeight: "bold" },
   quizScoreBar: { alignItems: "center", marginVertical: 12 },
-  quizScoreText: { color: "#F1C40F", fontWeight: "700" },
-  quizExplanation: { color: "#aaa", fontSize: 13, marginTop: 8 },
-  quizQuestionText: { color: "#fff", fontSize: 15, fontWeight: "700", marginBottom: 10 },
+  quizScoreText: { color: Palette.accent, fontWeight: "700" },
+  quizExplanation: { color: Palette.textMuted, fontSize: 13, marginTop: 8 },
+  quizQuestionText: { color: Palette.textPrimary, fontSize: 15, fontWeight: "700", marginBottom: 10 },
   quizOptionWrapper: { marginBottom: 10 },
   quizOption: { backgroundColor: "#111a2c", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: "#222" },
-  quizOptionSelected: { borderColor: "#5DADE2", backgroundColor: "#112244" },
-  quizOptionCorrect: { borderColor: "#2ECC71", backgroundColor: "#0d3320" },
-  quizOptionWrong: { borderColor: "#E74C3C", backgroundColor: "#2d0a0a" },
-  quizOptionText: { color: "#fff", fontSize: 14 },
-  quizOptionMeta: { color: "#aaa", fontSize: 12, marginTop: 4, marginLeft: 8 },
-  quizSubmitBtn: { backgroundColor: "#2ECC71", borderRadius: 10, paddingVertical: 12, marginBottom: 10, alignItems: "center" },
-  quizSubmitBtnText: { color: "#16213e", fontWeight: "bold", fontSize: 15 },
-  quizResultText: { color: "#F1C40F", fontWeight: "700", textAlign: "center", marginBottom: 10 },
-  btnPrimary: { backgroundColor: "#1a4a7a", borderRadius: 10, paddingVertical: 12, alignItems: "center" },
-  btnPrimaryText: { color: "#fff", fontWeight: "700" },
-  explainBtn: { backgroundColor: "#1a3a5c", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14, alignSelf: "flex-start", marginTop: 8, borderWidth: 1, borderColor: "#2980b9" },
-  explainBtnText: { color: "#5DADE2", fontWeight: "600", fontSize: 13 },
+  quizOptionSelected: { borderColor: Palette.info, backgroundColor: "#112244" },
+  quizOptionCorrect: { borderColor: Palette.success, backgroundColor: "#0d3320" },
+  quizOptionWrong: { borderColor: Palette.danger, backgroundColor: "#2d0a0a" },
+  quizOptionText: { color: Palette.textPrimary, fontSize: 14 },
+  quizOptionMeta: { color: Palette.textMuted, fontSize: 12, marginTop: 4, marginLeft: 8 },
+  quizSubmitBtn: { backgroundColor: Palette.success, borderRadius: 10, paddingVertical: 12, marginBottom: 10, alignItems: "center" },
+  quizSubmitBtnText: { color: Palette.card, fontWeight: "bold", fontSize: 15 },
+  quizResultText: { color: Palette.accent, fontWeight: "700", textAlign: "center", marginBottom: 10 },
+  btnPrimary: { backgroundColor: Palette.primary, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
+  btnPrimaryText: { color: Palette.textPrimary, fontWeight: "700" },
+  explainBtn: { backgroundColor: Palette.border, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14, alignSelf: "flex-start", marginTop: 8, borderWidth: 1, borderColor: "#2980b9" },
+  explainBtnText: { color: Palette.info, fontWeight: "600", fontSize: 13 },
   explainLoading: { flexDirection: "row", alignItems: "center", marginTop: 8 },
-  explainLoadingText: { color: "#F39C12", fontSize: 13, fontStyle: "italic" },
-  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 8, borderLeftWidth: 3, borderLeftColor: "#F39C12" },
+  explainLoadingText: { color: Palette.warn, fontSize: 13, fontStyle: "italic" },
+  quizExplanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 8, borderLeftWidth: 3, borderLeftColor: Palette.warn },
 });

@@ -4,6 +4,7 @@ import React from 'react';
 import { HapticTab } from '@/components/haptic-tab';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
+import { Palette } from "@/constants/palette";
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
@@ -12,12 +13,12 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: '#2CC985',
+        tabBarActiveTintColor: Palette.brand,
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: '#16213e',
-          borderTopColor: '#0f3460',
+          backgroundColor: Palette.card,
+          borderTopColor: Palette.inputBg,
           borderTopWidth: 1,
           height: 60,
           paddingBottom: 5,
@@ -27,7 +28,7 @@ export default function TabLayout() {
           fontSize: 12,
           fontWeight: '600',
         },
-        tabBarActiveBackgroundColor: '#0f3460',
+        tabBarActiveBackgroundColor: Palette.inputBg,
         tabBarInactiveTintColor: '#687076',
       }}>
       <Tabs.Screen

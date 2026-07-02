@@ -18,6 +18,7 @@ import {
 import { useFocusEffect } from "expo-router";
 import { useSettings } from "../../scripts/useSettings";
 import { AppSettings } from "../../scripts/settings-store";
+import { Palette } from "@/constants/palette";
 
 // ── Stepper: chọn số từ 1–4 ──────────────────────────────────
 function CountStepper({
@@ -82,7 +83,7 @@ export default function SettingsScreen() {
   if (!loaded || !draft) {
     return (
       <View style={s.loader}>
-        <ActivityIndicator color="#2CC985" size="large" />
+        <ActivityIndicator color={Palette.brand} size="large" />
       </View>
     );
   }
@@ -249,7 +250,7 @@ export default function SettingsScreen() {
           disabled={!dirty || saving}
         >
           {saving ? (
-            <ActivityIndicator color="#16213e" size="small" />
+            <ActivityIndicator color={Palette.card} size="small" />
           ) : (
             <Text style={s.saveBtnText}>{dirty ? "💾 Save Changes" : "✅ Saved"}</Text>
           )}
@@ -274,16 +275,16 @@ export default function SettingsScreen() {
 // STYLES
 // ─────────────────────────────────────────────
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1a1a2e" },
+  container: { flex: 1, backgroundColor: Palette.bg },
   content: { paddingBottom: 50 },
-  loader: { flex: 1, backgroundColor: "#1a1a2e", justifyContent: "center", alignItems: "center" },
+  loader: { flex: 1, backgroundColor: Palette.bg, justifyContent: "center", alignItems: "center" },
 
   header: { alignItems: "center", paddingTop: 28, paddingBottom: 16, paddingHorizontal: 16 },
-  headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
-  headerSub: { color: "#555", fontSize: 13, marginTop: 4 },
+  headerTitle: { fontSize: 26, fontWeight: "bold", color: Palette.accent },
+  headerSub: { color: Palette.textDim, fontSize: 13, marginTop: 4 },
 
   section: {
-    backgroundColor: "#16213e",
+    backgroundColor: Palette.card,
     borderRadius: 16,
     padding: 16,
     marginHorizontal: 16,
@@ -294,33 +295,33 @@ const s = StyleSheet.create({
     shadowRadius: 8,
     elevation: 5,
   },
-  sectionTitle: { color: "#5DADE2", fontWeight: "bold", fontSize: 14, marginBottom: 12 },
-  sectionHint: { color: "#555", fontSize: 12, marginBottom: 12, fontStyle: "italic" },
+  sectionTitle: { color: Palette.info, fontWeight: "bold", fontSize: 14, marginBottom: 12 },
+  sectionHint: { color: Palette.textDim, fontSize: 12, marginBottom: 12, fontStyle: "italic" },
 
-  fieldLabel: { color: "#888", fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 10 },
+  fieldLabel: { color: Palette.textFaint, fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 10 },
 
   input: {
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     borderRadius: 8,
     paddingVertical: 11,
     paddingHorizontal: 13,
-    color: "#2CC985",
+    color: Palette.brand,
     fontSize: 14,
     borderWidth: 1,
-    borderColor: "#1a4a7a",
+    borderColor: Palette.primary,
   },
   inputFlex: { flex: 1 },
 
   apiKeyRow: { flexDirection: "row", gap: 8, alignItems: "center" },
   eyeBtn: {
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     borderRadius: 8,
     width: 44,
     height: 44,
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#1a4a7a",
+    borderColor: Palette.primary,
   },
   eyeIcon: { fontSize: 18 },
   maskedKey: { color: "#444", fontSize: 12, marginTop: 4, fontFamily: "monospace" },
@@ -334,41 +335,41 @@ const s = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#0d2040",
   },
-  stepperLabel: { color: "#ccc", fontSize: 14, fontWeight: "600", flex: 1 },
+  stepperLabel: { color: Palette.textSecondary, fontSize: 14, fontWeight: "600", flex: 1 },
   stepperControls: { flexDirection: "row", gap: 6 },
   stepperBtn: {
     width: 38,
     height: 38,
     borderRadius: 8,
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     justifyContent: "center",
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#1a4a7a",
+    borderColor: Palette.primary,
   },
-  stepperBtnActive: { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
-  stepperBtnText: { color: "#555", fontWeight: "700", fontSize: 15 },
-  stepperBtnTextActive: { color: "#2CC985" },
+  stepperBtnActive: { backgroundColor: Palette.primary, borderColor: Palette.brand },
+  stepperBtnText: { color: Palette.textDim, fontWeight: "700", fontSize: 15 },
+  stepperBtnTextActive: { color: Palette.brand },
 
   // Actions
   actions: { marginHorizontal: 16, gap: 10 },
   saveBtn: {
-    backgroundColor: "#e67e22",
+    backgroundColor: Palette.hard,
     borderRadius: 12,
     paddingVertical: 15,
     alignItems: "center",
   },
   saveBtnDisabled: { backgroundColor: "#3a3a3a", opacity: 0.6 },
-  saveBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  saveBtnText: { color: Palette.textPrimary, fontWeight: "bold", fontSize: 16 },
   resetBtn: {
-    backgroundColor: "#16213e",
+    backgroundColor: Palette.card,
     borderRadius: 12,
     paddingVertical: 13,
     alignItems: "center",
     borderWidth: 1,
     borderColor: "#922b21",
   },
-  resetBtnText: { color: "#E74C3C", fontWeight: "600", fontSize: 14 },
+  resetBtnText: { color: Palette.danger, fontWeight: "600", fontSize: 14 },
 
   // Footer
   footer: { marginTop: 20, paddingHorizontal: 24, alignItems: "center" },

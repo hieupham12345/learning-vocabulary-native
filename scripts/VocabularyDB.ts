@@ -6,7 +6,8 @@ export interface Vocabulary {
   id?: number;
   word: string;
   language: string;
-  is_learned: boolean;
+  /** Stored as SQLite INTEGER 0/1 — this is the raw row value. */
+  is_learned: number;
   level?: string;
 }
 

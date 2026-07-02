@@ -32,16 +32,18 @@ import { callChatbot } from "../../scripts/chatbotService";
 import Constants from "expo-constants";
 import { localDict } from "../../scripts/LocalDictionary"; // ← NEW
 import { getSettings } from "@/scripts/settings-store";
+import { Palette } from "@/constants/palette";
 
 // ─────────────────────────────────────────────
 // CONFIG
 // ─────────────────────────────────────────────
 
-const { api_key, model, agent } = getSettings();
-  
-const GPT_API_KEY = api_key;
-const AGENT = agent;
-const MODEL = model;
+// Read settings fresh at call time. Reading them at module load captured the
+// empty defaults, because settings load asynchronously after the bundle imports.
+function modelConfig() {
+  const { api_key, model, agent } = getSettings();
+  return { key: api_key, model, agent };
+}
 
 const learner = new VocabularyLearner();
 
@@ -334,7 +336,8 @@ export default function ExamScreen() {
     setGeneratingKeyword(true);
     try {
       const prompt = buildKeywordPrompt(inputLang, topic);
-      const result = await callChatbot(prompt, MODEL, AGENT, GPT_API_KEY);
+      const cfg = modelConfig();
+      const result = await callChatbot(prompt, cfg.model, cfg.agent, cfg.key);
       setKeyword(result.trim().replace(/^["']|["']$/g, ""));
     } catch {
       // silent fail — user can retry
@@ -347,7 +350,8 @@ export default function ExamScreen() {
     setGenerating(true);
     try {
       const prompt = buildReadingPrompt(inputLang, outputLang, level, length, topic, keyword);
-      const raw = await callChatbot(prompt, MODEL, AGENT, GPT_API_KEY);
+      const cfg = modelConfig();
+      const raw = await callChatbot(prompt, cfg.model, cfg.agent, cfg.key);
       let clean = raw.trim();
       if (clean.startsWith("```json")) clean = clean.slice(7).trim();
       else if (clean.startsWith("```")) clean = clean.slice(3).trim();
@@ -462,7 +466,7 @@ export default function ExamScreen() {
                   <Text style={[s.chipText, length === l && s.chipTextActive]}>
                     {l === "short" ? "⚡ Short" : l === "medium" ? "📄 Medium" : "📚 Long"}
                   </Text>
-                  <Text style={[s.chipSub, length === l && { color: "#aaa" }]}>
+                  <Text style={[s.chipSub, length === l && { color: Palette.textMuted }]}>
                     {LENGTH_WORDS[l]}
                   </Text>
                 </TouchableOpacity>
@@ -490,7 +494,7 @@ export default function ExamScreen() {
                 disabled={generatingKeyword}
               >
                 {generatingKeyword
-                  ? <ActivityIndicator size="small" color="#2CC985" />
+                  ? <ActivityIndicator size="small" color={Palette.brand} />
                   : <Text style={s.keywordGenBtnText}>✨ Random</Text>
                 }
               </TouchableOpacity>
@@ -504,7 +508,7 @@ export default function ExamScreen() {
             >
               {generating ? (
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                  <ActivityIndicator color="#16213e" size="small" />
+                  <ActivityIndicator color={Palette.card} size="small" />
                   <Text style={s.generateBtnText}>Generating passage…</Text>
                 </View>
               ) : (
@@ -521,7 +525,7 @@ export default function ExamScreen() {
             nestedScrollEnabled
           >
             {loadingHistory ? (
-              <ActivityIndicator color="#F1C40F" style={{ marginTop: 20 }} />
+              <ActivityIndicator color={Palette.accent} style={{ marginTop: 20 }} />
             ) : history.length === 0 ? (
               <Text style={s.emptyText}>No reading sessions yet.</Text>
             ) : (
@@ -861,8 +865,8 @@ function ReadingModal({
               <View style={[rm.passageBox, { zIndex: 10, overflow: "visible" }]}>
                 {tokenizing ? (
                   <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 12 }}>
-                    <ActivityIndicator size="small" color="#F1C40F" />
-                    <Text style={{ color: "#888", fontStyle: "italic" }}>Tokenizing passage…</Text>
+                    <ActivityIndicator size="small" color={Palette.accent} />
+                    <Text style={{ color: Palette.textFaint, fontStyle: "italic" }}>Tokenizing passage…</Text>
                   </View>
                 ) : (
                   <View style={rm.passageContainer}>
@@ -944,8 +948,8 @@ function ReadingModal({
                     key={i}
                     style={[
                       rm.qCard,
-                      submitted && isCorrect && { borderColor: "#2ECC71", borderWidth: 2 },
-                      submitted && isWrong && { borderColor: "#E74C3C", borderWidth: 2 },
+                      submitted && isCorrect && { borderColor: Palette.success, borderWidth: 2 },
+                      submitted && isWrong && { borderColor: Palette.danger, borderWidth: 2 },
                     ]}
                   >
                     <Text style={rm.qText}>Q{i + 1}: {q.question}</Text>
@@ -974,8 +978,8 @@ function ReadingModal({
                             <Text
                               style={[
                                 rm.optText,
-                                correctOpt && { color: "#2ECC71", fontWeight: "bold" },
-                                wrongOpt && { color: "#E74C3C" },
+                                correctOpt && { color: Palette.success, fontWeight: "bold" },
+                                wrongOpt && { color: Palette.danger },
                               ]}
                             >
                               {opt}
@@ -985,7 +989,7 @@ function ReadingModal({
                             <Text style={rm.optMeta}>✅ Correct answer</Text>
                           )}
                           {submitted && wrongOpt && (
-                            <Text style={[rm.optMeta, { color: "#E74C3C" }]}>❌ Your answer</Text>
+                            <Text style={[rm.optMeta, { color: Palette.danger }]}>❌ Your answer</Text>
                           )}
                         </View>
                       );
@@ -1016,70 +1020,70 @@ function ReadingModal({
 // STYLES — Setup screen
 // ─────────────────────────────────────────────
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#1a1a2e" },
+  container: { flex: 1, backgroundColor: Palette.bg },
   containerContent: { flexGrow: 1, paddingBottom: 30 },
   header: { alignItems: "center", paddingVertical: 20 },
-  headerTitle: { fontSize: 26, fontWeight: "bold", color: "#F1C40F" },
-  card: { backgroundColor: "#16213e", borderRadius: 16, padding: 16, margin: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
+  headerTitle: { fontSize: 26, fontWeight: "bold", color: Palette.accent },
+  card: { backgroundColor: Palette.card, borderRadius: 16, padding: 16, margin: 16, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6 },
   tabRow: { flexDirection: "row", marginBottom: 16, gap: 8 },
-  tab: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#0a1628", alignItems: "center" },
-  tabActive: { backgroundColor: "#1a4a7a" },
+  tab: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: Palette.inset, alignItems: "center" },
+  tabActive: { backgroundColor: Palette.primary },
   tabText: { color: "#777", fontWeight: "600" },
-  tabTextActive: { color: "#2CC985" },
-  sectionLabel: { color: "#5DADE2", fontWeight: "bold", fontSize: 13, marginTop: 12, marginBottom: 6 },
+  tabTextActive: { color: Palette.brand },
+  sectionLabel: { color: Palette.info, fontWeight: "bold", fontSize: 13, marginTop: 12, marginBottom: 6 },
   miniLabel: { color: "#777", fontSize: 11, marginBottom: 4 },
   langRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  arrow: { color: "#555", fontSize: 18, marginBottom: 0, marginTop: 16 },
-  picker: { backgroundColor: "#0a1628", borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: "#1a4a7a" },
-  pickerFull: { backgroundColor: "#0a1628", borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: "#1a4a7a" },
-  pickerText: { color: "#2CC985", fontWeight: "600" },
+  arrow: { color: Palette.textDim, fontSize: 18, marginBottom: 0, marginTop: 16 },
+  picker: { backgroundColor: Palette.inset, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: Palette.primary },
+  pickerFull: { backgroundColor: Palette.inset, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 12, borderWidth: 1, borderColor: Palette.primary },
+  pickerText: { color: Palette.brand, fontWeight: "600" },
   chipRow: { flexDirection: "row", gap: 8 },
-  chip: { flex: 1, backgroundColor: "#0a1628", borderRadius: 10, paddingVertical: 10, paddingHorizontal: 8, alignItems: "center", borderWidth: 1, borderColor: "#1a4a7a" },
-  chipActive: { backgroundColor: "#1a4a7a", borderColor: "#2CC985" },
+  chip: { flex: 1, backgroundColor: Palette.inset, borderRadius: 10, paddingVertical: 10, paddingHorizontal: 8, alignItems: "center", borderWidth: 1, borderColor: Palette.primary },
+  chipActive: { backgroundColor: Palette.primary, borderColor: Palette.brand },
   chipText: { color: "#777", fontWeight: "700", fontSize: 13 },
-  chipTextActive: { color: "#2CC985" },
-  chipSub: { color: "#555", fontSize: 10, marginTop: 2 },
-  generateBtn: { backgroundColor: "#e67e22", borderRadius: 12, paddingVertical: 14, alignItems: "center", marginTop: 20 },
-  generateBtnText: { color: "#fff", fontWeight: "bold", fontSize: 16 },
+  chipTextActive: { color: Palette.brand },
+  chipSub: { color: Palette.textDim, fontSize: 10, marginTop: 2 },
+  generateBtn: { backgroundColor: Palette.hard, borderRadius: 12, paddingVertical: 14, alignItems: "center", marginTop: 20 },
+  generateBtnText: { color: Palette.textPrimary, fontWeight: "bold", fontSize: 16 },
   historyList: { maxHeight: Dimensions.get("window").height * 0.55 },
   historyListContent: { paddingBottom: 8 },
-  historyItem: { flexDirection: "row", alignItems: "center", backgroundColor: "#0a1628", borderRadius: 10, padding: 12, marginBottom: 8, gap: 10 },
-  historyTitle: { color: "#fff", fontSize: 14, fontWeight: "600", marginBottom: 4 },
+  historyItem: { flexDirection: "row", alignItems: "center", backgroundColor: Palette.inset, borderRadius: 10, padding: 12, marginBottom: 8, gap: 10 },
+  historyTitle: { color: Palette.textPrimary, fontSize: 14, fontWeight: "600", marginBottom: 4 },
   historyMeta: { color: "#777", fontSize: 11 },
-  reviewBtn: { backgroundColor: "#1a4a7a", borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14 },
-  reviewBtnText: { color: "#fff", fontWeight: "700", fontSize: 13 },
+  reviewBtn: { backgroundColor: Palette.primary, borderRadius: 8, paddingVertical: 8, paddingHorizontal: 14 },
+  reviewBtnText: { color: Palette.textPrimary, fontWeight: "700", fontSize: 13 },
   clearBtn: { backgroundColor: "#922b21", borderRadius: 8, paddingVertical: 12, marginTop: 8, alignItems: "center" },
-  clearBtnText: { color: "#fff", fontWeight: "bold" },
-  emptyText: { color: "#555", textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
+  clearBtnText: { color: Palette.textPrimary, fontWeight: "bold" },
+  emptyText: { color: Palette.textDim, textAlign: "center", paddingVertical: 20, fontStyle: "italic" },
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.7)", justifyContent: "flex-end" },
-  pickerSheet: { backgroundColor: "#16213e", borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
-  pickerSheetTitle: { color: "#F1C40F", fontSize: 17, fontWeight: "bold", marginBottom: 14, textAlign: "center" },
+  pickerSheet: { backgroundColor: Palette.card, borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20 },
+  pickerSheetTitle: { color: Palette.accent, fontSize: 17, fontWeight: "bold", marginBottom: 14, textAlign: "center" },
   pickerSheetItem: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: "#222" },
-  pickerSheetItemText: { color: "#fff", fontSize: 16, textAlign: "center" },
+  pickerSheetItemText: { color: Palette.textPrimary, fontSize: 16, textAlign: "center" },
   keywordRow: { flexDirection: "row", gap: 8, alignItems: "center" },
   keywordInput: {
     flex: 1,
-    backgroundColor: "#0a1628",
+    backgroundColor: Palette.inset,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderWidth: 1,
-    borderColor: "#1a4a7a",
-    color: "#2CC985",
+    borderColor: Palette.primary,
+    color: Palette.brand,
     fontSize: 14,
   },
   keywordGenBtn: {
-    backgroundColor: "#1a4a7a",
+    backgroundColor: Palette.primary,
     borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 14,
     borderWidth: 1,
-    borderColor: "#2CC985",
+    borderColor: Palette.brand,
     minWidth: 80,
     alignItems: "center",
   },
-  keywordGenBtnText: { color: "#2CC985", fontWeight: "700", fontSize: 13 },
-  keywordHint: { color: "#555", fontSize: 11, marginTop: 4, marginBottom: 4 },
+  keywordGenBtnText: { color: Palette.brand, fontWeight: "700", fontSize: 13 },
+  keywordHint: { color: Palette.textDim, fontSize: 11, marginTop: 4, marginBottom: 4 },
 
 });
 
@@ -1087,27 +1091,27 @@ const s = StyleSheet.create({
 // STYLES — Reading modal
 // ─────────────────────────────────────────────
 const rm = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#1a1a2e" },
-  header: { flexDirection: "row", alignItems: "flex-start", padding: 16, backgroundColor: "#16213e", borderBottomWidth: 1, borderBottomColor: "#222" },
-  headerTitle: { color: "#F1C40F", fontSize: 17, fontWeight: "bold", lineHeight: 24 },
+  root: { flex: 1, backgroundColor: Palette.bg },
+  header: { flexDirection: "row", alignItems: "flex-start", padding: 16, backgroundColor: Palette.card, borderBottomWidth: 1, borderBottomColor: "#222" },
+  headerTitle: { color: Palette.accent, fontSize: 17, fontWeight: "bold", lineHeight: 24 },
   headerMeta: { color: "#777", fontSize: 12, marginTop: 2 },
-  closeBtn: { color: "#E74C3C", fontSize: 22, fontWeight: "bold", paddingLeft: 10 },
-  phaseRow: { flexDirection: "row", backgroundColor: "#16213e", paddingHorizontal: 16, paddingBottom: 10, paddingTop: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: "#111" },
-  phaseTab: { flex: 1, paddingVertical: 8, borderRadius: 8, backgroundColor: "#0a1628", alignItems: "center" },
-  phaseTabActive: { backgroundColor: "#1a4a7a" },
+  closeBtn: { color: Palette.danger, fontSize: 22, fontWeight: "bold", paddingLeft: 10 },
+  phaseRow: { flexDirection: "row", backgroundColor: Palette.card, paddingHorizontal: 16, paddingBottom: 10, paddingTop: 8, gap: 8, borderBottomWidth: 1, borderBottomColor: "#111" },
+  phaseTab: { flex: 1, paddingVertical: 8, borderRadius: 8, backgroundColor: Palette.inset, alignItems: "center" },
+  phaseTabActive: { backgroundColor: Palette.primary },
   phaseTabText: { color: "#777", fontWeight: "600", fontSize: 13 },
-  phaseTabTextActive: { color: "#2CC985" },
+  phaseTabTextActive: { color: Palette.brand },
   body: { padding: 16, paddingBottom: 40 },
-  passageBox: { backgroundColor: "#0a1628", borderRadius: 12, padding: 14, marginBottom: 16 },
+  passageBox: { backgroundColor: Palette.inset, borderRadius: 12, padding: 14, marginBottom: 16 },
   passageContainer: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start" },
   tokenWrapper: { position: "relative" },
   passageText: { fontSize: 18, color: "#E0E0E0", lineHeight: 32 },
   tokenText: { textDecorationLine: "underline", textDecorationColor: "#444" },
-  tokenActive: { color: "#F1C40F", textDecorationColor: "#F1C40F" },
+  tokenActive: { color: Palette.accent, textDecorationColor: Palette.accent },
   tooltipContainer: {
     position: "absolute",
     top: 32,
-    backgroundColor: "#1a4a7a",
+    backgroundColor: Palette.primary,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
@@ -1120,27 +1124,27 @@ const rm = StyleSheet.create({
     shadowOpacity: 0.5,
     shadowRadius: 5,
   },
-  tooltipText: { color: "#2ECC71", fontSize: 14, fontWeight: "bold", textAlign: "left" },
-  proceedBtn: { backgroundColor: "#1a4a7a", borderRadius: 10, paddingVertical: 14, alignItems: "center", marginBottom: 10 },
-  proceedBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
-  scoreCard: { backgroundColor: "#0a1628", borderRadius: 12, padding: 16, marginBottom: 16, alignItems: "center" },
-  scoreLabel: { color: "#aaa", fontSize: 13, marginBottom: 4 },
-  scoreValue: { color: "#F1C40F", fontSize: 36, fontWeight: "bold" },
-  scorePct: { color: "#2CC985", fontSize: 20, fontWeight: "bold", marginBottom: 10 },
-  scoreBar: { width: "100%", height: 8, backgroundColor: "#1a4a7a", borderRadius: 4, overflow: "hidden" },
-  scoreBarFill: { height: 8, backgroundColor: "#2ECC71", borderRadius: 4 },
-  qCard: { backgroundColor: "#16213e", borderRadius: 12, padding: 16, marginBottom: 14 },
-  qText: { color: "#F1C40F", fontSize: 15, fontWeight: "700", marginBottom: 12, lineHeight: 22 },
-  optBtn: { backgroundColor: "#0a1628", borderRadius: 8, paddingVertical: 11, paddingHorizontal: 14, borderWidth: 1, borderColor: "#222" },
-  optSelected: { borderColor: "#5DADE2", backgroundColor: "#112244" },
-  optCorrect: { borderColor: "#2ECC71", backgroundColor: "#0d3320" },
-  optWrong: { borderColor: "#E74C3C", backgroundColor: "#2d0a0a" },
-  optText: { color: "#ccc", fontSize: 14 },
-  optMeta: { color: "#aaa", fontSize: 11, marginTop: 3, marginLeft: 10 },
-  explanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 8, borderLeftWidth: 3, borderLeftColor: "#F39C12" },
-  explanationText: { color: "#F39C12", fontSize: 13, lineHeight: 20 },
+  tooltipText: { color: Palette.success, fontSize: 14, fontWeight: "bold", textAlign: "left" },
+  proceedBtn: { backgroundColor: Palette.primary, borderRadius: 10, paddingVertical: 14, alignItems: "center", marginBottom: 10 },
+  proceedBtnText: { color: Palette.textPrimary, fontWeight: "bold", fontSize: 15 },
+  scoreCard: { backgroundColor: Palette.inset, borderRadius: 12, padding: 16, marginBottom: 16, alignItems: "center" },
+  scoreLabel: { color: Palette.textMuted, fontSize: 13, marginBottom: 4 },
+  scoreValue: { color: Palette.accent, fontSize: 36, fontWeight: "bold" },
+  scorePct: { color: Palette.brand, fontSize: 20, fontWeight: "bold", marginBottom: 10 },
+  scoreBar: { width: "100%", height: 8, backgroundColor: Palette.primary, borderRadius: 4, overflow: "hidden" },
+  scoreBarFill: { height: 8, backgroundColor: Palette.success, borderRadius: 4 },
+  qCard: { backgroundColor: Palette.card, borderRadius: 12, padding: 16, marginBottom: 14 },
+  qText: { color: Palette.accent, fontSize: 15, fontWeight: "700", marginBottom: 12, lineHeight: 22 },
+  optBtn: { backgroundColor: Palette.inset, borderRadius: 8, paddingVertical: 11, paddingHorizontal: 14, borderWidth: 1, borderColor: "#222" },
+  optSelected: { borderColor: Palette.info, backgroundColor: "#112244" },
+  optCorrect: { borderColor: Palette.success, backgroundColor: "#0d3320" },
+  optWrong: { borderColor: Palette.danger, backgroundColor: "#2d0a0a" },
+  optText: { color: Palette.textSecondary, fontSize: 14 },
+  optMeta: { color: Palette.textMuted, fontSize: 11, marginTop: 3, marginLeft: 10 },
+  explanationBox: { backgroundColor: "#1a1a1a", borderRadius: 8, padding: 10, marginTop: 8, borderLeftWidth: 3, borderLeftColor: Palette.warn },
+  explanationText: { color: Palette.warn, fontSize: 13, lineHeight: 20 },
   submitBtn: { backgroundColor: "#27ae60", borderRadius: 10, paddingVertical: 16, alignItems: "center", marginTop: 8 },
-  submitBtnText: { color: "#fff", fontWeight: "bold", fontSize: 15 },
+  submitBtnText: { color: Palette.textPrimary, fontWeight: "bold", fontSize: 15 },
   tooltipOverlay: {
   position: "absolute",
   top: 0,
