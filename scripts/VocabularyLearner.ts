@@ -62,7 +62,7 @@ export class VocabularyLearner {
       throw new Error(`Google TTS API error ${response.status}: ${errText}`);
     }
     const data = await response.json();
-    if (!data.audioContent) throw new Error("Google TTS trả về không có audioContent.");
+    if (!data.audioContent) throw new Error("Google TTS returned no audioContent.");
     return data.audioContent as string;
   }
 
@@ -146,7 +146,8 @@ Each example item:
     const prompt = this.createLearningPrompt(word, inputLanguage, outputLanguage);
     let responseText = "";
     try {
-      responseText = await callChatbot(prompt, this.modelName, this.modelType, this.apiKey);
+      // 1 từ vựng mới = 1 phiên chat riêng
+      responseText = await callChatbot(prompt, this.modelName, this.modelType, this.apiKey, 1.0, { newChat: true });
       return JSON.parse(this.cleanJsonResponse(responseText));
     } catch (error: any) {
       return { error: error.message, raw_response: responseText };
@@ -363,6 +364,40 @@ Example English: ["I", " ", "love", " ", "learning."]
     }
   }
 
+  // Tách token cho NHIỀU câu trong MỘT prompt (JSON) — tránh spam webview.
+  // Không bao giờ reject: lỗi/parse hỏng → fallback split từng câu.
+  public async tokenizeSentences(sentences: string[], language: string): Promise<string[][]> {
+    if (sentences.length === 0) return [];
+
+    const fallback = (s: string): string[] =>
+      ["Chinese", "Japanese"].includes(language) ? s.split("") : s.split(/(\s+)/);
+
+    const prompt = `
+You are an expert linguist. Split EACH ${language} sentence below into an array of meaningful tokens.
+INPUT: a JSON array of ${sentences.length} sentences.
+OUTPUT: ONLY a valid JSON array of ${sentences.length} arrays — element i is the token array for sentence i, SAME order and length. No markdown, no code blocks, no extra text.
+RULES:
+1. Every character of a sentence must appear in exactly one of its tokens (perfect reconstruction).
+2. Chinese/Japanese: split by word/morpheme, NOT single character.
+3. Space-separated languages: split on whitespace; punctuation attached to preceding word OR standalone.
+Example (2 sentences): [["我","喜欢","学习","中文"],["I"," ","love"," ","learning."]]
+SENTENCES: ${JSON.stringify(sentences)}
+    `;
+
+    try {
+      const responseText = await callChatbot(prompt, this.modelName, this.modelType, this.apiKey);
+      const parsed = JSON.parse(this.cleanJsonResponse(responseText));
+      if (!Array.isArray(parsed)) return sentences.map(fallback);
+      // Khớp theo index; phần tử thiếu/hỏng → fallback câu tương ứng
+      return sentences.map((s, i) => {
+        const toks = parsed[i];
+        return Array.isArray(toks) && toks.length > 0 ? toks : fallback(s);
+      });
+    } catch {
+      return sentences.map(fallback);
+    }
+  }
+
   public async preprocessExampleTokens(learningData: any, language: string): Promise<any> {
     if (!learningData?.examples) return learningData;
     for (const diff of ["easy", "medium", "hard", "super_hard"] as const) {
@@ -407,7 +442,7 @@ OUTPUT FORMAT (plain text only, no markdown):
       }
       return clean;
     } catch (error: any) {
-      return `[Lỗi dịch thuật: ${error.message}]`;
+      return `[Error: Translation failed: ${error.message}]`;
     }
   }
 

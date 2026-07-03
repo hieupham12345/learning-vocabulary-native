@@ -32,6 +32,7 @@ import { callChatbot } from "../../scripts/chatbotService";
 import Constants from "expo-constants";
 import { localDict } from "../../scripts/LocalDictionary"; // ← NEW
 import { getSettings } from "@/scripts/settings-store";
+import { bumpActivity } from "@/scripts/progress-store";
 import { Palette } from "@/constants/palette";
 
 // ─────────────────────────────────────────────
@@ -381,6 +382,7 @@ export default function ExamScreen() {
       setHistory((prev) => [saved, ...prev]);
       setActiveEntry(saved);
       setReadingModal(true);
+      bumpActivity(1); // tạo 1 bài đọc = 1 hoạt động
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to generate passage.");
     } finally {
@@ -783,7 +785,7 @@ function ReadingModal({
 
       setTranslationMap((prev) => ({ ...prev, [idx]: { text: result, align } }));
     } catch {
-      setTranslationMap((prev) => ({ ...prev, [idx]: { text: "❌ Lỗi dịch", align } }));
+      setTranslationMap((prev) => ({ ...prev, [idx]: { text: "❌ Translation error", align } }));
     } finally {
       inflight.current.delete(inflightKey);
     }
@@ -906,7 +908,14 @@ function ReadingModal({
                                 translation.align === "left" ? { left: 0 } : { right: 0 },
                               ]}
                             >
-                              <Text style={rm.tooltipText}>{translation.text}</Text>
+                              <ScrollView
+                                style={{ maxHeight: 180 }}
+                                nestedScrollEnabled
+                                showsVerticalScrollIndicator
+                                onStartShouldSetResponder={() => true}
+                              >
+                                <Text style={rm.tooltipText}>{translation.text}</Text>
+                              </ScrollView>
                             </View>
                           )}
                         </View>

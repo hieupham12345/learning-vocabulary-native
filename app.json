@@ -41,8 +41,8 @@
           }
         }
       ],
-      ["expo-av", { "microphonePermission": "Allow this app to access your microphone." }]
-
+      ["expo-av", { "microphonePermission": "Allow this app to access your microphone." }],
+      ["expo-notifications", { "color": "#2CC985" }]
     ],
     "experiments": {
       "typedRoutes": true,

@@ -22,6 +22,7 @@ const MAPPING = {
   'book.fill': 'menu-book', 
   'pencil': 'edit',
   'gearshape.fill': 'settings',
+  'chart.bar.fill': 'bar-chart',
 } as IconMapping;
 
 /**

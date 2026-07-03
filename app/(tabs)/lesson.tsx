@@ -182,7 +182,7 @@ export default function LessonScreen() {
             </View>
 
             {selectedWords.length === 0 && hasMoreData === false ? (
-              <Text style={styles.emptyText}>Chưa có từ vựng nào.</Text>
+              <Text style={styles.emptyText}>No vocabulary yet.</Text>
             ) : (
               <FlatList
                 style={styles.wordList}
@@ -230,7 +230,7 @@ export default function LessonScreen() {
             )}
 
             <TouchableOpacity style={styles.btnPrimary} onPress={() => setModalVisible(false)}>
-              <Text style={styles.btnPrimaryText}>Đóng</Text>
+              <Text style={styles.btnPrimaryText}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>

@@ -168,6 +168,14 @@ async function getDB(): Promise<SQLite.SQLiteDatabase> {
         ON quiz_history(input_lang, taken_at DESC);
     `);
 
+    // daily_activity: streak + daily goal. day = local YYYY-MM-DD.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS daily_activity (
+        day   TEXT    PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+
     // app_kv: CHỈ lưu giá trị nhỏ:
     //   tts_speed (number), migration flags (bool),
     //   last_learned_ptr (pointer = word+langs, KHÔNG phải blob VocabData)
@@ -615,6 +623,75 @@ export async function loadQuizExplanations(
   } catch (err) {
     logError(`loadQuizExplanations(${quizId})`, err);
     return {};
+  }
+}
+
+// ─────────────────────────────────────────────
+// ══════════════════════════════════════════════
+//  DAILY ACTIVITY  — streak + daily goal
+// ══════════════════════════════════════════════
+// ─────────────────────────────────────────────
+
+export interface DailyCount {
+  day: string;   // local YYYY-MM-DD
+  count: number;
+}
+
+/** Ngày local dạng YYYY-MM-DD (KHÔNG dùng UTC để streak khớp múi giờ user) */
+export function localDay(d: Date = new Date()): string {
+  const y  = d.getFullYear();
+  const m  = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+
+/** Cộng dồn số hoạt động học của HÔM NAY. Trả về count mới của ngày. */
+export async function recordActivity(n: number = 1): Promise<number> {
+  try {
+    const db  = await getDB();
+    const day = localDay();
+    await db.runAsync(
+      `INSERT INTO daily_activity (day, count) VALUES (?, ?)
+       ON CONFLICT(day) DO UPDATE SET count = count + excluded.count`,
+      [day, n]
+    );
+    const row = await db.getFirstAsync<{ count: number }>(
+      `SELECT count FROM daily_activity WHERE day=?`,
+      [day]
+    );
+    return row?.count ?? n;
+  } catch (err) {
+    logError("recordActivity", err);
+    return 0;
+  }
+}
+
+/** Danh sách count theo ngày (mới → cũ), tối đa `limitDays` ngày gần nhất. */
+export async function listDailyActivity(limitDays: number = 30): Promise<DailyCount[]> {
+  try {
+    const db = await getDB();
+    const rows = await db.getAllAsync<DailyCount>(
+      `SELECT day, count FROM daily_activity ORDER BY day DESC LIMIT ?`,
+      [limitDays]
+    );
+    return rows;
+  } catch (err) {
+    logError("listDailyActivity", err);
+    return [];
+  }
+}
+
+/** Tổng số ngày từng học (dùng cho stats) */
+export async function countActiveDays(): Promise<number> {
+  try {
+    const db  = await getDB();
+    const row = await db.getFirstAsync<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM daily_activity WHERE count > 0`
+    );
+    return row?.cnt ?? 0;
+  } catch (err) {
+    logError("countActiveDays", err);
+    return 0;
   }
 }
 

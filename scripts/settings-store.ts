@@ -8,11 +8,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const STORAGE_KEY = "app_settings_v1";
 
+export type ChatMode = "web" | "api";
+
 export interface AppSettings {
-  api_key: string;
-  chatgpt_api_key: string;     // <-- THÊM MỚI (Dành riêng cho Whisper)
-  agent: string;
-  model: string;
+  chat_mode: ChatMode;         // 'web' = Google login (Gemini WebView) | 'api' = REST API
+  api_key: string;             // key cho nhánh API (routing theo `agent`)
+  chatgpt_api_key: string;     // Whisper (SpeechCheck) — luôn dùng OpenAI API
+  agent: string;               // 'chatgpt' | 'gemini' — chọn provider cho nhánh API
+  model: string;               // gpt-* (chatgpt) hoặc gemini-* (gemini)
+  gemini_logged_in: boolean;   // trạng thái đăng nhập Gemini web
   easy_examples: number;       // 1–4
   medium_examples: number;     // 1–4
   hard_examples: number;       // 1–4
@@ -20,10 +24,12 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
+  chat_mode: "web",
   api_key: "",
-  chatgpt_api_key: "",         // <-- THÊM MỚI
+  chatgpt_api_key: "",
   agent: "chatgpt",
   model: "gpt-5.4-mini",
+  gemini_logged_in: false,
   easy_examples: 2,
   medium_examples: 3,
   hard_examples: 4,

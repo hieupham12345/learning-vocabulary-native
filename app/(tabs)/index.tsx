@@ -19,6 +19,8 @@ import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 import { loadSettings, subscribeSettings } from "@/scripts/settings-store";
+import { bumpActivity } from "@/scripts/progress-store";
+import { StreakPill } from "@/components/progress/StreakPill";
 import { speakText } from "@/scripts/tts";
 import { DIFFICULTY_COLORS } from "@/constants/palette";
 import type {
@@ -176,7 +178,6 @@ export default function VocabularyLearnerUI() {
 
 
   const hasDataRef       = useRef(false);
-  const tokenizingSet    = useRef<Set<number>>(new Set());
   const tokenizeAbortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const inflight         = useRef<Set<string>>(new Set());
 
@@ -378,7 +379,6 @@ export default function VocabularyLearnerUI() {
     if (allExamples.length === 0 || !currentData) return;
 
     tokenizeAbortRef.current = { cancelled: false };
-    tokenizingSet.current    = new Set();
     const abortToken         = tokenizeAbortRef.current;
 
     const pendingIndices = allExamples
@@ -393,23 +393,18 @@ export default function VocabularyLearnerUI() {
       return next;
     });
 
-    const tokenizeOne = async (i: number): Promise<{ i: number; tokens: string[] }> => {
-      if (tokenizingSet.current.has(i)) throw new Error(`skip:${i}`);
-      tokenizingSet.current.add(i);
-      const tokens = await learner.tokenizeSentence(
-        allExamples[i].sentence,
-        currentData.language.input ?? inputLang
-      );
-      return { i, tokens };
-    };
+    const sentences = pendingIndices.map((i) => allExamples[i].sentence);
+    const lang = currentData.language.input ?? inputLang;
 
-    Promise.allSettled(pendingIndices.map((i) => tokenizeOne(i))).then(async (results) => {
+    // Tách token TẤT CẢ câu trong 1 prompt (JSON) — tránh spam webview
+    learner.tokenizeSentences(sentences, lang).then(async (tokenArrays) => {
       if (abortToken.cancelled) return;
 
       const successMap: Record<number, string[]> = {};
-      for (const r of results) {
-        if (r.status === "fulfilled") successMap[r.value.i] = r.value.tokens;
-      }
+      pendingIndices.forEach((idx, k) => {
+        const toks = tokenArrays[k];
+        if (Array.isArray(toks) && toks.length > 0) successMap[idx] = toks;
+      });
 
       const successIndices = Object.keys(successMap).map(Number);
       if (successIndices.length === 0 || abortToken.cancelled) return;
@@ -453,7 +448,7 @@ export default function VocabularyLearnerUI() {
       });
     });
 
-    return () => { abortToken.cancelled = true; tokenizingSet.current.clear(); };
+    return () => { abortToken.cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExamples.length, currentData?.word, refreshKey]);
 
@@ -481,6 +476,7 @@ export default function VocabularyLearnerUI() {
       const examples = applyVocabData(data);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
       await saveWord(word.trim(), inputLang, outputLang, data);
+      bumpActivity(1); // học 1 từ mới = 1 hoạt động
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Unknown error");
       setStatus("Error occurred.");
@@ -622,7 +618,7 @@ export default function VocabularyLearnerUI() {
     }
 
     const key = `quiz:${words.join("|")}:${quizQuestionCount}`;
-    if (inflight.current.has(key)) { setStatus("⏳ Quiz đang được tạo…"); return; }
+    if (inflight.current.has(key)) { setStatus("⏳ Creating quiz…"); return; }
     inflight.current.add(key);
 
     setQuizLoading(true);
@@ -732,6 +728,7 @@ export default function VocabularyLearnerUI() {
       >
         <View style={styles.header}>
           <Text style={styles.headerTitle}>🌟 Vocabulary Learning</Text>
+          <StreakPill />
           {migrating && (
             <View style={styles.migrationBanner}>
               <ActivityIndicator size="small" color="#F1C40F" style={{ marginRight: 8 }} />
@@ -860,20 +857,6 @@ export default function VocabularyLearnerUI() {
                     pointerEvents={isFlipped ? "none" : "auto"}
                   >
                     <View style={styles.sentenceBox}>{renderSentenceTokens()}</View>
-                    {translationPopup && !isFlipped && (
-                      <View style={[styles.translationPopup, { maxHeight: 250 }]} onTouchStart={(e) => e.stopPropagation()}>
-                        <View style={styles.translationPopupHeader}>
-                          <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
-                          <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
-                        </View>
-                        <ScrollView nestedScrollEnabled style={{ marginVertical: 8 }} showsVerticalScrollIndicator>
-                          <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
-                        </ScrollView>
-                        <TouchableOpacity onPress={() => setTranslationPopup(null)}>
-                          <Text style={styles.translationPopupClose}>✕ Close</Text>
-                        </TouchableOpacity>
-                      </View>
-                    )}
                   </Animated.View>
 
                   <Animated.View
@@ -899,6 +882,26 @@ export default function VocabularyLearnerUI() {
                     ) : null}
                   </Animated.View>
                 </TouchableOpacity>
+
+                {/* Popup dịch: đặt NGOÀI flip TouchableOpacity để nó không giành gesture cuộn của ScrollView */}
+                {translationPopup && !isFlipped && (
+                  <View style={[styles.translationPopup, { maxHeight: 250 }]} onTouchStart={(e) => e.stopPropagation()}>
+                    <View style={styles.translationPopupHeader}>
+                      <Text style={styles.translationPopupWord}>{translationPopup.text}</Text>
+                      <TTSButton onPress={() => speakText(translationPopup.text, inputLang, ttsSpeed)} size={15} />
+                    </View>
+                    <ScrollView
+                      nestedScrollEnabled
+                      style={{ marginVertical: 8, maxHeight: 180 }}
+                      showsVerticalScrollIndicator
+                    >
+                      <Text style={styles.translationPopupText}>{translationPopup.translation}</Text>
+                    </ScrollView>
+                    <TouchableOpacity onPress={() => setTranslationPopup(null)}>
+                      <Text style={styles.translationPopupClose}>✕ Close</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             )}
 
@@ -1006,7 +1009,7 @@ export default function VocabularyLearnerUI() {
           example={currentExample}
           currentScore={practiceSuccess}
           onClose={() => setPracticeModalVisible(false)}
-          onCorrect={() => setPracticeSuccess((n) => n + 1)}
+          onCorrect={() => { setPracticeSuccess((n) => n + 1); bumpActivity(1); }}
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
           apiKey={apiKey}
@@ -1023,7 +1026,9 @@ export default function VocabularyLearnerUI() {
           onClose={() => setQuizWindowData(null)}
           onSaveResult={async (entry) => {
             try {
-              return await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
+              const id = await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
+              bumpActivity(entry.total); // mỗi câu quiz = 1 hoạt động
+              return id;
             } catch (e) {
               console.error("[QuizModal saveQuiz]", e);
               return undefined;

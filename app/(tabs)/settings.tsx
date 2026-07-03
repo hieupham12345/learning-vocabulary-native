@@ -4,7 +4,7 @@
  * Dark navy theme — nhất quán với các tab khác
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -15,9 +15,10 @@ import {
   ActivityIndicator,
   Alert,
 } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { useFocusEffect, useRouter, type Href } from "expo-router";
 import { useSettings } from "../../scripts/useSettings";
 import { AppSettings } from "../../scripts/settings-store";
+import { WebViewChatBridge } from "../../scripts/webview-chat-bridge";
 import { Palette } from "@/constants/palette";
 
 // ── Stepper: chọn số từ 1–4 ──────────────────────────────────
@@ -62,13 +63,23 @@ function maskKey(key: string): string {
 // ─────────────────────────────────────────────
 export default function SettingsScreen() {
   const { settings, updateSettings, loaded } = useSettings();
+  const router = useRouter();
 
   // Local draft state — only commits on Save
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [saving, setSaving] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [showChatGptKey, setShowChatGptKey] = useState(false); // <-- Trạng thái show/hide cho key mới
+  const [showChatGptKey, setShowChatGptKey] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [geminiLive, setGeminiLive] = useState(WebViewChatBridge.isLoggedIn);
+
+  // Trạng thái đăng nhập Gemini theo thời gian thực từ engine ẩn
+  useEffect(() => {
+    const unsub = WebViewChatBridge.subscribe(setGeminiLive);
+    return () => {
+      unsub();
+    };
+  }, []);
 
   // Sync draft when settings load / change from outside
   useFocusEffect(
@@ -115,10 +126,12 @@ export default function SettingsScreen() {
         style: "destructive",
         onPress: async () => {
           const defaults: AppSettings = {
+            chat_mode: "web",
             api_key: "",
-            chatgpt_api_key: "", // <-- Cập nhật default
+            chatgpt_api_key: "",
             agent: "chatgpt",
             model: "gpt-5.4-mini",
+            gemini_logged_in: draft.gemini_logged_in,
             easy_examples: 2,
             medium_examples: 3,
             hard_examples: 4,
@@ -141,34 +154,96 @@ export default function SettingsScreen() {
         <Text style={s.headerSub}>Configure API, model & difficulty</Text>
       </View>
 
-      {/* ── API Section ── */}
+      {/* ── Chat Engine: Web hoặc API ── */}
       <View style={s.section}>
-        <Text style={s.sectionTitle}>🔑 API Configuration</Text>
+        <Text style={s.sectionTitle}>🤖 AI Source (Chat Engine)</Text>
 
-        <Text style={s.fieldLabel}>API Key</Text>
-        <View style={s.apiKeyRow}>
-          <TextInput
-            style={[s.input, s.inputFlex]}
-            value={draft.api_key}
-            onChangeText={(v) => patch("api_key", v)}
-            placeholder="sk-…"
-            placeholderTextColor="#333"
-            secureTextEntry={!showKey}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TouchableOpacity
-            style={s.eyeBtn}
-            onPress={() => setShowKey((p) => !p)}
-          >
-            <Text style={s.eyeIcon}>{showKey ? "🙈" : "👁️"}</Text>
-          </TouchableOpacity>
+        {/* Selector: Google login hoặc API key — cũng là chat_mode routing */}
+        <View style={s.segment}>
+          {(["web", "api"] as const).map((m) => (
+            <TouchableOpacity
+              key={m}
+              style={[s.segBtn, draft.chat_mode === m && s.segBtnActive]}
+              onPress={() => patch("chat_mode", m)}
+            >
+              <Text style={[s.segText, draft.chat_mode === m && s.segTextActive]}>
+                {m === "web" ? "🌐 Google Login" : "🔑 API Key"}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
-        {draft.api_key !== "" && !showKey && (
-          <Text style={s.maskedKey}>{maskKey(draft.api_key)}</Text>
-        )}
 
-        {/* ── NEW: ChatGPT API Key (for Whisper) ── */}
+        {draft.chat_mode === "web" ? (
+          <>
+            <Text style={s.sectionHint}>
+              Sign in to Gemini and use it like a normal chat (no API cost). Pick your default
+              model right on the sign-in screen — Gemini will remember it.
+            </Text>
+            <View style={s.statusRow}>
+              <View style={[s.statusDot, geminiLive ? s.dotOn : s.dotOff]} />
+              <Text style={s.statusText}>{geminiLive ? "Signed in" : "Not signed in"}</Text>
+            </View>
+            <TouchableOpacity style={s.geminiBtn} onPress={() => router.push("/GeminiLogin" as Href)}>
+              <Text style={s.geminiBtnText}>
+                {geminiLive ? "🔧 Manage sign-in" : "🔑 Sign in to Gemini"}
+              </Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <>
+            <Text style={s.sectionHint}>
+              Call the REST API directly. Agent picks the provider: “chatgpt” → OpenAI, “gemini” → Gemini API.
+            </Text>
+
+            <Text style={s.fieldLabel}>API Key</Text>
+            <View style={s.apiKeyRow}>
+              <TextInput
+                style={[s.input, s.inputFlex]}
+                value={draft.api_key}
+                onChangeText={(v) => patch("api_key", v)}
+                placeholder="sk-… / AIza…"
+                placeholderTextColor="#333"
+                secureTextEntry={!showApiKey}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <TouchableOpacity style={s.eyeBtn} onPress={() => setShowApiKey((p) => !p)}>
+                <Text style={s.eyeIcon}>{showApiKey ? "🙈" : "👁️"}</Text>
+              </TouchableOpacity>
+            </View>
+            {draft.api_key !== "" && !showApiKey && (
+              <Text style={s.maskedKey}>{maskKey(draft.api_key)}</Text>
+            )}
+
+            <Text style={s.fieldLabel}>Agent</Text>
+            <TextInput
+              style={s.input}
+              value={draft.agent}
+              onChangeText={(v) => patch("agent", v)}
+              placeholder="chatgpt"
+              placeholderTextColor="#333"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <Text style={s.fieldLabel}>Model</Text>
+            <TextInput
+              style={s.input}
+              value={draft.model}
+              onChangeText={(v) => patch("model", v)}
+              placeholder="gpt-4o-mini / gemini-2.5-flash"
+              placeholderTextColor="#333"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+          </>
+        )}
+      </View>
+
+      {/* ── API Section (Whisper) ── */}
+      <View style={s.section}>
+        <Text style={s.sectionTitle}>🔑 Whisper (Speech Check)</Text>
+
         <Text style={s.fieldLabel}>ChatGPT API Key (for Whisper)</Text>
         <View style={s.apiKeyRow}>
           <TextInput
@@ -191,28 +266,6 @@ export default function SettingsScreen() {
         {draft.chatgpt_api_key !== "" && !showChatGptKey && (
           <Text style={s.maskedKey}>{maskKey(draft.chatgpt_api_key)}</Text>
         )}
-
-        <Text style={s.fieldLabel}>Agent</Text>
-        <TextInput
-          style={s.input}
-          value={draft.agent}
-          onChangeText={(v) => patch("agent", v)}
-          placeholder="chatgpt"
-          placeholderTextColor="#333"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-
-        <Text style={s.fieldLabel}>Model</Text>
-        <TextInput
-          style={s.input}
-          value={draft.model}
-          onChangeText={(v) => patch("model", v)}
-          placeholder="gpt-5.4-mini"
-          placeholderTextColor="#333"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
       </View>
 
       {/* ── Examples per difficulty ── */}
@@ -311,6 +364,32 @@ const s = StyleSheet.create({
     borderColor: Palette.primary,
   },
   inputFlex: { flex: 1 },
+
+  segment: {
+    flexDirection: "row",
+    backgroundColor: Palette.inset,
+    borderRadius: 10,
+    padding: 4,
+    marginBottom: 12,
+    gap: 4,
+  },
+  segBtn: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: "center" },
+  segBtnActive: { backgroundColor: Palette.primary },
+  segText: { color: Palette.textDim, fontWeight: "600", fontSize: 13 },
+  segTextActive: { color: Palette.brand },
+
+  statusRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
+  statusDot: { width: 10, height: 10, borderRadius: 5 },
+  dotOn: { backgroundColor: Palette.success },
+  dotOff: { backgroundColor: Palette.danger },
+  statusText: { color: Palette.textSecondary, fontSize: 13, fontWeight: "600" },
+  geminiBtn: {
+    backgroundColor: Palette.primary,
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: "center",
+  },
+  geminiBtnText: { color: Palette.textPrimary, fontWeight: "700", fontSize: 15 },
 
   apiKeyRow: { flexDirection: "row", gap: 8, alignItems: "center" },
   eyeBtn: {
