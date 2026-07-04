@@ -120,6 +120,44 @@ export class VocabularyDB {
     );
   }
 
+  /**
+   * Đánh dấu từ đã học LẦN ĐẦU (0→1). Atomic + idempotent.
+   * Trả true nếu đây là lần đầu (changes>0) → dùng để +streak/+goal 1 lần duy nhất.
+   * Học lại từ đã học (is_learned=1) → changes=0 → false → KHÔNG tính.
+   */
+  async markLearned(id: number): Promise<boolean> {
+    const db = await this.getDB();
+    const res = await db.runAsync(
+      'UPDATE vocabulary SET is_learned = 1 WHERE id = ? AND is_learned = 0',
+      [id]
+    );
+    return (res.changes ?? 0) > 0;
+  }
+
+  /**
+   * Luồng gõ tay (từ không đến từ danh sách có id). Trả true nếu là từ MỚI học lần đầu.
+   * - Chưa có row → INSERT (is_learned=1) → true.
+   * - Có & đã học (is_learned=1) → false.
+   * - Có & chưa học (is_learned=0) → UPDATE lên 1 → true.
+   */
+  async learnWordByText(word: string, language: string): Promise<boolean> {
+    const db = await this.getDB();
+    const row = await db.getFirstAsync<{ id: number; is_learned: number }>(
+      'SELECT id, is_learned FROM vocabulary WHERE word = ? AND language = ?',
+      [word, language]
+    );
+    if (!row) {
+      await db.runAsync(
+        'INSERT INTO vocabulary (word, language, is_learned, level) VALUES (?, ?, 1, ?)',
+        [word, language, '']
+      );
+      return true;
+    }
+    if (row.is_learned === 1) return false;
+    await db.runAsync('UPDATE vocabulary SET is_learned = 1 WHERE id = ?', [row.id]);
+    return true;
+  }
+
   async setLevel(id: number, level: string) {
     const db = await this.getDB();
     await db.runAsync(

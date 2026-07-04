@@ -19,7 +19,7 @@ import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
 import { loadSettings, subscribeSettings } from "@/scripts/settings-store";
-import { bumpActivity } from "@/scripts/progress-store";
+import { bumpActivity, refreshProgress } from "@/scripts/progress-store";
 import { StreakPill } from "@/components/progress/StreakPill";
 import { speakText } from "@/scripts/tts";
 import { DIFFICULTY_COLORS } from "@/constants/palette";
@@ -239,6 +239,9 @@ export default function VocabularyLearnerUI() {
   // ─────────────────────────────────────────────
   useFocusEffect(
     useCallback(() => {
+      // Mở/tab vào home → tính lại streak/todayCount (đề phòng đã sang ngày mới)
+      refreshProgress().catch(() => {});
+
       if (!dbReady) return;
 
       const load = async () => {
@@ -276,10 +279,10 @@ export default function VocabularyLearnerUI() {
             if (cached) {
               applyHistoryEntry(cached, "⚡");
               setStatus(`⚡ Loaded '${pending.word}' from cache`);
-              if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
+              if (pending.id) { await database.initDB(); if (await database.markLearned(pending.id)) bumpActivity(1); }
             } else {
               await fetchAndApplyWord(pending.word, pending.language, outputLang, async () => {
-                if (pending.id) { await database.initDB(); await database.setLearned(pending.id, true); }
+                if (pending.id) { await database.initDB(); if (await database.markLearned(pending.id)) bumpActivity(1); }
               });
             }
             return;
@@ -476,7 +479,9 @@ export default function VocabularyLearnerUI() {
       const examples = applyVocabData(data);
       setStatus(`✅ Ready to learn '${word}' — ${examples.length} examples!`);
       await saveWord(word.trim(), inputLang, outputLang, data);
-      bumpActivity(1); // học 1 từ mới = 1 hoạt động
+      // Chỉ +streak/+goal khi đây là từ MỚI (lần đầu học), không tính học lại
+      await database.initDB();
+      if (await database.learnWordByText(word.trim(), inputLang)) bumpActivity(1);
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Unknown error");
       setStatus("Error occurred.");
@@ -513,7 +518,7 @@ export default function VocabularyLearnerUI() {
           output_lang: cached.output_lang, learned_at: cached.timestamp,
         });
       } catch {}
-      if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
+      if (target.id) { await database.initDB(); if (await database.markLearned(target.id)) bumpActivity(1); }
     } else {
       setLoading(true);
       setStatus(`🔄 [${lessonNav.level}] ${nextIndex + 1}/${words.length} — '${target.word}'...`);
@@ -522,7 +527,7 @@ export default function VocabularyLearnerUI() {
         if (!data.error) {
           applyVocabData(data);
           setStatus(`✅ [${lessonNav.level}] ${nextIndex + 1}/${words.length} — '${target.word}'`);
-          if (target.id) { await database.initDB(); await database.setLearned(target.id, true); }
+          if (target.id) { await database.initDB(); if (await database.markLearned(target.id)) bumpActivity(1); }
           await saveWord(target.word, language, outputLang, data);
         }
       } catch (e) {
@@ -1009,7 +1014,7 @@ export default function VocabularyLearnerUI() {
           example={currentExample}
           currentScore={practiceSuccess}
           onClose={() => setPracticeModalVisible(false)}
-          onCorrect={() => { setPracticeSuccess((n) => n + 1); bumpActivity(1); }}
+          onCorrect={() => { setPracticeSuccess((n) => n + 1); }}
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
           apiKey={apiKey}
@@ -1027,7 +1032,6 @@ export default function VocabularyLearnerUI() {
           onSaveResult={async (entry) => {
             try {
               const id = await saveQuiz({ ...entry, input_lang: currentData?.language?.input ?? inputLang });
-              bumpActivity(entry.total); // mỗi câu quiz = 1 hoạt động
               return id;
             } catch (e) {
               console.error("[QuizModal saveQuiz]", e);

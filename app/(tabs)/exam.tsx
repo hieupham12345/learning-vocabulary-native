@@ -32,7 +32,6 @@ import { callChatbot } from "../../scripts/chatbotService";
 import Constants from "expo-constants";
 import { localDict } from "../../scripts/LocalDictionary"; // ← NEW
 import { getSettings } from "@/scripts/settings-store";
-import { bumpActivity } from "@/scripts/progress-store";
 import { Palette } from "@/constants/palette";
 
 // ─────────────────────────────────────────────
@@ -382,7 +381,6 @@ export default function ExamScreen() {
       setHistory((prev) => [saved, ...prev]);
       setActiveEntry(saved);
       setReadingModal(true);
-      bumpActivity(1); // tạo 1 bài đọc = 1 hoạt động
     } catch (e: any) {
       Alert.alert("Error", e.message ?? "Failed to generate passage.");
     } finally {
