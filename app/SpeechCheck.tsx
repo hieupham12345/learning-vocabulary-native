@@ -286,6 +286,15 @@ export function SpeechCheck({
   const [interim,  setInterim]  = useState("");
   const gotFinalRef = useRef(false);
   const gotErrorRef = useRef(false);
+  // True once the mic has actually started capturing audio this attempt. Guards
+  // against premature/stale `end` events (e.g. a previous mount's abort() leaking
+  // in via `key`-driven remount) firing "No speech detected" before recording begins.
+  const audioStartedRef = useRef(false);
+  // True once THIS mount has actually called start(). The native module is a global
+  // singleton and the component remounts per word, so events — including a spurious
+  // "client" error emitted by a previous mount's cleanup abort() — can leak across
+  // mounts. Swallow any event that arrives before this mount started its own session.
+  const startedRef = useRef(false);
 
   // Latest values for the async native-event callbacks (avoid stale closures).
   const cmpRef = useRef({ target, threshold, onResult });
@@ -297,6 +306,7 @@ export function SpeechCheck({
     if (!SpeechModule) return;
 
     const onResult = (event: any) => {
+      if (!startedRef.current) return; // stale event from a previous mount's session
       const transcript = (event.results?.[0]?.transcript ?? "").trim();
       if (event.isFinal) {
         gotFinalRef.current = true;
@@ -309,28 +319,40 @@ export function SpeechCheck({
         setInterim(transcript);
       }
     };
+    const onAudioStart = () => { if (!startedRef.current) return; audioStartedRef.current = true; };
     const onError = (event: any) => {
+      if (!startedRef.current) return; // stale event from a previous mount's session
       if (gotFinalRef.current) return; // ignore trailing errors after a good result
+      // "aborted" is fired by our own abort() — not a user-facing failure.
+      if (event.error === "aborted") return;
       gotErrorRef.current = true;
       console.warn("[SpeechCheck] error:", event.error, "|", event.message);
       setErrorMsg(event.message || event.error || "Recognition failed.");
       setState("error");
     };
     const onEnd = () => {
+      if (!startedRef.current) return; // stale event from a previous mount's session
       // Don't clobber a real error message — `end` always fires after `error`.
       if (gotFinalRef.current || gotErrorRef.current) return;
+      // Ignore an `end` that arrives before the mic ever started capturing —
+      // it's a premature/stale event, not a genuine "no speech" outcome.
+      if (!audioStartedRef.current) return;
       setErrorMsg("No speech detected. Try again.");
       setState("error");
     };
 
     const subs = [
       SpeechModule.addListener("result", onResult),
+      SpeechModule.addListener("audiostart", onAudioStart),
       SpeechModule.addListener("error", onError),
       SpeechModule.addListener("end", onEnd),
     ];
     return () => {
       subs.forEach((s: any) => s.remove());
-      SpeechModule.abort();
+      // Only abort if this mount actually started a session. Aborting while idle
+      // makes the native recognizer emit a spurious "client" error that leaks onto
+      // the next mount — the root cause of the immediate "client" failure.
+      if (startedRef.current) SpeechModule.abort();
     };
   }, []);
 
@@ -345,6 +367,7 @@ export function SpeechCheck({
       setInterim("");
       gotFinalRef.current = false;
       gotErrorRef.current = false;
+      audioStartedRef.current = false;
 
       const { granted } = await SpeechModule.requestPermissionsAsync();
       if (!granted) {
@@ -357,6 +380,7 @@ export function SpeechCheck({
         interimResults: true,
         continuous: false,
       });
+      startedRef.current = true;
       setState("recording");
     } catch (e: any) {
       setErrorMsg(e.message ?? "Could not start recognition.");
