@@ -13,7 +13,6 @@ export type ChatMode = "web" | "api";
 export interface AppSettings {
   chat_mode: ChatMode;         // 'web' = Google login (Gemini WebView) | 'api' = REST API
   api_key: string;             // key cho nhánh API (routing theo `agent`)
-  chatgpt_api_key: string;     // Whisper (SpeechCheck) — luôn dùng OpenAI API
   agent: string;               // 'chatgpt' | 'gemini' — chọn provider cho nhánh API
   model: string;               // gpt-* (chatgpt) hoặc gemini-* (gemini)
   gemini_logged_in: boolean;   // trạng thái đăng nhập Gemini web
@@ -26,7 +25,6 @@ export interface AppSettings {
 export const DEFAULT_SETTINGS: AppSettings = {
   chat_mode: "web",
   api_key: "",
-  chatgpt_api_key: "",
   agent: "chatgpt",
   model: "gpt-5.4-mini",
   gemini_logged_in: false,

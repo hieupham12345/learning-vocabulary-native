@@ -18,7 +18,7 @@ import { VocabularyLearner } from "../../scripts/VocabularyLearner";
 import { useFocusEffect } from "expo-router";
 import { localDict } from "@/scripts/LocalDictionary";
 import { database } from "@/scripts/VocabularyDB";
-import { loadSettings, subscribeSettings } from "@/scripts/settings-store";
+import { loadSettings } from "@/scripts/settings-store";
 import { bumpActivity, refreshProgress } from "@/scripts/progress-store";
 import { StreakPill } from "@/components/progress/StreakPill";
 import { speakText } from "@/scripts/tts";
@@ -151,8 +151,6 @@ export default function VocabularyLearnerUI() {
   const [refreshKey, setRefreshKey] = useState(0);
 
 
-  const [apiKey, setApiKey] = useState("");
-
   const [isFlipped, setIsFlipped] = useState(false);
   const flipAnim = useRef(new Animated.Value(0)).current;
 
@@ -198,7 +196,6 @@ export default function VocabularyLearnerUI() {
         ]);
         
         if (cancelled) return;
-        setApiKey(settings.chatgpt_api_key ?? "");
         const ok = await initDatabase();
         if (cancelled) return;
         if (!ok) { setDbError(true); setStatus("❌ Database init failed."); return; }
@@ -225,14 +222,6 @@ export default function VocabularyLearnerUI() {
     return () => { cancelled = true; };
   }, []);
 
-
-  // Thêm useEffect riêng để subscribe:
-  useEffect(() => {
-    const unsub = subscribeSettings((s) => {
-      setApiKey(s.chatgpt_api_key ?? "");
-    });
-    return unsub;
-  }, []);
 
   // ─────────────────────────────────────────────
   // FOCUS EFFECT
@@ -966,7 +955,6 @@ export default function VocabularyLearnerUI() {
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
           onClose={() => setMemoryCheckVisible(false)}
-          apiKey={apiKey}
         />
       )}
 
@@ -1017,7 +1005,6 @@ export default function VocabularyLearnerUI() {
           onCorrect={() => { setPracticeSuccess((n) => n + 1); }}
           inputLang={inputLang}
           ttsSpeed={ttsSpeed}
-          apiKey={apiKey}
         />
       )}
 

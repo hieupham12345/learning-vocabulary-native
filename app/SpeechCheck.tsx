@@ -1,25 +1,23 @@
 /**
  * SpeechCheck.tsx
- * 
- * Drop-in component: a microphone button that records audio, transcribes via
- * OpenAI Whisper (free-tier compatible), then colour-diff the result against
- * the target sentence.
+ *
+ * Drop-in component: a microphone button that uses the device's native
+ * speech-to-text (Android SpeechRecognizer / iOS SFSpeechRecognizer via
+ * expo-speech-recognition), then colour-diff the result against the target
+ * sentence. No network / API key required.
  *
  * Usage:
  *   <SpeechCheck
  *     target="我喜欢学习中文"
  *     language="Chinese"
- *     apiKey={OPENAI_API_KEY}
  *     onResult={(ok) => console.log(ok ? "pass" : "fail")}
  *   />
  *
- * Dependencies already in the project:
- *   expo-av          – Audio recording
- *   (no new deps needed – fetch is built-in)
+ * Dependencies:
+ *   expo-speech-recognition – native STT (config plugin in app.json)
  *
- * Add to app.json permissions if not already present:
- *   iOS:     NSMicrophoneUsageDescription
- *   Android: RECORD_AUDIO
+ * Requires a dev build / prebuild (not Expo Go) and a real device — the
+ * Android emulator usually has no speech recognition service installed.
  */
 
 import React, { useState, useRef, useCallback } from "react";
@@ -29,19 +27,23 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
-  Platform,
   Alert,
 } from "react-native";
-import { Audio } from "expo-av";
+import { requireOptionalNativeModule } from "expo";
 import { Palette } from "@/constants/palette";
 
-// ─── Language → Whisper language code ────────────────────────────────────────
-const LANG_TO_WHISPER: Record<string, string> = {
-  Chinese:    "zh",
-  English:    "en",
-  Japanese:   "ja",
-  Vietnamese: "vi",
-  Korean:     "ko",
+// Native STT module — null in Expo Go (requires a dev build). requireOptionalNativeModule
+// returns null instead of throwing, so the app still boots when the module is absent.
+const SpeechModule: any = requireOptionalNativeModule("ExpoSpeechRecognition");
+const speechAvailable = !!SpeechModule;
+
+// ─── Language → BCP-47 recognizer locale ─────────────────────────────────────
+const LANG_TO_LOCALE: Record<string, string> = {
+  Chinese:    "zh-CN",
+  English:    "en-US",
+  Japanese:   "ja-JP",
+  Vietnamese: "vi-VN",
+  Korean:     "ko-KR",
 };
 
 // ─── Fuzzy token comparison ───────────────────────────────────────────────────
@@ -100,7 +102,7 @@ export interface CompareResult {
   targetDiff: DiffToken[];
   /** Diff tokens for the TRANSCRIPT side (what was heard) */
   transcriptDiff: DiffToken[];
-  /** Raw transcript returned by Whisper */
+  /** Raw transcript returned by the recognizer */
   transcript: string;
 }
 
@@ -171,42 +173,6 @@ export function compareTexts(target: string, transcript: string, threshold = 0.8
   const score   = tTokens.length > 0 ? correct / tTokens.length : 1;
 
   return { score, passed: score >= threshold, targetDiff, transcriptDiff, transcript };
-}
-
-// ─── Whisper transcription ────────────────────────────────────────────────────
-
-async function transcribeWhisper(
-  uri: string,
-  language: string,
-  apiKey: string
-): Promise<string> {
-  const whisperLang = LANG_TO_WHISPER[language] ?? "zh";
-
-  // Read audio file as blob
-  const response = await fetch(uri);
-  const blob     = await response.blob();
-
-  const form = new FormData();
-  // expo-av records as m4a on iOS, webm/ogg on Android
-  const ext      = Platform.OS === "ios" ? "m4a" : "webm";
-  const mimeType = Platform.OS === "ios" ? "audio/m4a" : "audio/webm";
-  form.append("file",     { uri, name: `audio.${ext}`, type: mimeType } as any);
-  form.append("model",    "whisper-1");
-  form.append("language", whisperLang);
-
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Whisper API ${res.status}: ${err}`);
-  }
-
-  const data = await res.json();
-  return (data.text ?? "").trim();
 }
 
 // ─── DiffView ─────────────────────────────────────────────────────────────────
@@ -300,7 +266,6 @@ const dv = StyleSheet.create({
 interface SpeechCheckProps {
   target: string;
   language: string;
-  apiKey: string;
   /** Called with true/false once a result is obtained */
   onResult?: (passed: boolean, result: CompareResult) => void;
   /** 0–1, default 0.8 */
@@ -312,69 +277,99 @@ type RecordState = "idle" | "recording" | "processing" | "done" | "error";
 export function SpeechCheck({
   target,
   language,
-  apiKey,
   onResult,
   threshold = 0.8,
 }: SpeechCheckProps) {
-  const [state,      setState]      = useState<RecordState>("idle");
-  const [result,     setResult]     = useState<CompareResult | null>(null);
-  const [errorMsg,   setErrorMsg]   = useState("");
-  const recordingRef = useRef<Audio.Recording | null>(null);
+  const [state,    setState]    = useState<RecordState>("idle");
+  const [result,   setResult]   = useState<CompareResult | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [interim,  setInterim]  = useState("");
+  const gotFinalRef = useRef(false);
+  const gotErrorRef = useRef(false);
+
+  // Latest values for the async native-event callbacks (avoid stale closures).
+  const cmpRef = useRef({ target, threshold, onResult });
+  cmpRef.current = { target, threshold, onResult };
+
+  // Register native STT listeners (no-op in Expo Go where the module is absent).
+  // Also aborts any in-flight recognition when the component unmounts (remounts per word).
+  React.useEffect(() => {
+    if (!SpeechModule) return;
+
+    const onResult = (event: any) => {
+      const transcript = (event.results?.[0]?.transcript ?? "").trim();
+      if (event.isFinal) {
+        gotFinalRef.current = true;
+        const { target: t, threshold: th, onResult: cb } = cmpRef.current;
+        const cmp = compareTexts(t, transcript, th);
+        setResult(cmp);
+        setState("done");
+        cb?.(cmp.passed, cmp);
+      } else {
+        setInterim(transcript);
+      }
+    };
+    const onError = (event: any) => {
+      if (gotFinalRef.current) return; // ignore trailing errors after a good result
+      gotErrorRef.current = true;
+      console.warn("[SpeechCheck] error:", event.error, "|", event.message);
+      setErrorMsg(event.message || event.error || "Recognition failed.");
+      setState("error");
+    };
+    const onEnd = () => {
+      // Don't clobber a real error message — `end` always fires after `error`.
+      if (gotFinalRef.current || gotErrorRef.current) return;
+      setErrorMsg("No speech detected. Try again.");
+      setState("error");
+    };
+
+    const subs = [
+      SpeechModule.addListener("result", onResult),
+      SpeechModule.addListener("error", onError),
+      SpeechModule.addListener("end", onEnd),
+    ];
+    return () => {
+      subs.forEach((s: any) => s.remove());
+      SpeechModule.abort();
+    };
+  }, []);
 
   const startRecording = useCallback(async () => {
+    if (!SpeechModule) {
+      Alert.alert("Không khả dụng", "Nhận dạng giọng nói cần bản dev build — không hỗ trợ trong Expo Go.");
+      return;
+    }
     try {
       setResult(null);
       setErrorMsg("");
+      setInterim("");
+      gotFinalRef.current = false;
+      gotErrorRef.current = false;
 
-      const { granted } = await Audio.requestPermissionsAsync();
+      const { granted } = await SpeechModule.requestPermissionsAsync();
       if (!granted) {
-        Alert.alert("Permission required", "Microphone permission is needed to use Speech Check.");
+        Alert.alert("Permission required", "Microphone & speech recognition permission is needed to use Speech Check.");
         return;
       }
 
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+      SpeechModule.start({
+        lang: LANG_TO_LOCALE[language] ?? "zh-CN",
+        interimResults: true,
+        continuous: false,
       });
-
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
-      recordingRef.current = recording;
       setState("recording");
     } catch (e: any) {
-      setErrorMsg(e.message ?? "Could not start recording.");
+      setErrorMsg(e.message ?? "Could not start recognition.");
       setState("error");
     }
+  }, [language]);
+
+  const stopRecognition = useCallback(() => {
+    setState("processing");
+    SpeechModule?.stop();
   }, []);
 
-  const stopAndTranscribe = useCallback(async () => {
-    const rec = recordingRef.current;
-    if (!rec) return;
-
-    setState("processing");
-    try {
-      await rec.stopAndUnloadAsync();
-      await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
-      const uri = rec.getURI();
-      recordingRef.current = null;
-
-      if (!uri) throw new Error("No audio URI returned.");
-      if (!apiKey) throw new Error("No API key configured for speech transcription.");
-
-      const transcript = await transcribeWhisper(uri, language, apiKey);
-      const cmp        = compareTexts(target, transcript, threshold);
-      setResult(cmp);
-      setState("done");
-      onResult?.(cmp.passed, cmp);
-    } catch (e: any) {
-      setErrorMsg(e.message ?? "Transcription failed.");
-      setState("error");
-      recordingRef.current = null;
-    }
-  }, [target, language, apiKey, threshold, onResult]);
-
-  const reset = () => { setState("idle"); setResult(null); setErrorMsg(""); };
+  const reset = () => { setState("idle"); setResult(null); setErrorMsg(""); setInterim(""); };
 
   return (
     <View style={sc2.root}>
@@ -388,7 +383,7 @@ export function SpeechCheck({
         )}
 
         {state === "recording" && (
-          <TouchableOpacity style={[sc2.micBtn, sc2.micBtnRecording]} onPress={stopAndTranscribe}>
+          <TouchableOpacity style={[sc2.micBtn, sc2.micBtnRecording]} onPress={stopRecognition}>
             <RecordingPulse />
             <Text style={sc2.micLabel}>Stop Recording</Text>
           </TouchableOpacity>
@@ -408,6 +403,14 @@ export function SpeechCheck({
           </TouchableOpacity>
         )}
       </View>
+
+      {!speechAvailable && (
+        <Text style={sc2.errText}>Speech-to-text cần dev build (không hỗ trợ Expo Go).</Text>
+      )}
+
+      {state === "recording" && interim.length > 0 && (
+        <Text style={sc2.interimText}>{interim}</Text>
+      )}
 
       {state === "error" && (
         <Text style={sc2.errText}>⚠ {errorMsg}</Text>
@@ -439,4 +442,5 @@ const sc2 = StyleSheet.create({
   micIcon:           { fontSize: 20 },
   micLabel:          { color: Palette.textPrimary, fontWeight: "600", fontSize: 14 },
   errText:           { color: Palette.danger, fontSize: 12, marginTop: 8, textAlign: "center" },
+  interimText:       { color: Palette.textDim, fontSize: 15, marginTop: 8, textAlign: "center", fontStyle: "italic" },
 });

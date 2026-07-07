@@ -68,7 +68,6 @@ export default function SettingsScreen() {
   // Local draft state — only commits on Save
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [saving, setSaving] = useState(false);
-  const [showChatGptKey, setShowChatGptKey] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [geminiLive, setGeminiLive] = useState(WebViewChatBridge.isLoggedIn);
@@ -128,7 +127,6 @@ export default function SettingsScreen() {
           const defaults: AppSettings = {
             chat_mode: "web",
             api_key: "",
-            chatgpt_api_key: "",
             agent: "chatgpt",
             model: "gpt-5.4-mini",
             gemini_logged_in: draft.gemini_logged_in,
@@ -237,34 +235,6 @@ export default function SettingsScreen() {
               autoCorrect={false}
             />
           </>
-        )}
-      </View>
-
-      {/* ── API Section (Whisper) ── */}
-      <View style={s.section}>
-        <Text style={s.sectionTitle}>🔑 Whisper (Speech Check)</Text>
-
-        <Text style={s.fieldLabel}>ChatGPT API Key (for Whisper)</Text>
-        <View style={s.apiKeyRow}>
-          <TextInput
-            style={[s.input, s.inputFlex]}
-            value={draft.chatgpt_api_key}
-            onChangeText={(v) => patch("chatgpt_api_key", v)}
-            placeholder="sk-…"
-            placeholderTextColor="#333"
-            secureTextEntry={!showChatGptKey}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TouchableOpacity
-            style={s.eyeBtn}
-            onPress={() => setShowChatGptKey((p) => !p)}
-          >
-            <Text style={s.eyeIcon}>{showChatGptKey ? "🙈" : "👁️"}</Text>
-          </TouchableOpacity>
-        </View>
-        {draft.chatgpt_api_key !== "" && !showChatGptKey && (
-          <Text style={s.maskedKey}>{maskKey(draft.chatgpt_api_key)}</Text>
         )}
       </View>
 

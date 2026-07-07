@@ -9,11 +9,11 @@ import { TTSButton } from "./TTSButton";
 import { mcStyles, styles } from "./styles";
 
 export function TypingPracticeModal({
-  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed, apiKey = "",
+  example, currentScore, onClose, onCorrect, inputLang, ttsSpeed,
 }: {
   example: ExampleItem | null; currentScore: number;
   onClose: () => void; onCorrect: () => void;
-  inputLang: string; ttsSpeed: number; apiKey?: string;
+  inputLang: string; ttsSpeed: number;
 }) {
   const [input,     setInput]     = useState("");
   const [completed, setCompleted] = useState(false);
@@ -46,7 +46,7 @@ export function TypingPracticeModal({
   };
 
   return (
-    <Modal visible animationType="slide">
+    <Modal visible animationType="slide" onRequestClose={onClose}>
       <View style={styles.typingRoot}>
         <View style={styles.typingHeader}>
           <Text style={styles.typingTitle}>⌨️ Typing Practice</Text>
@@ -72,7 +72,7 @@ export function TypingPracticeModal({
           {tab === "typing" ? (
             <ColoredInput input={input} target={target} placeholder="Type here..." onChangeText={handleTypingChange} autoFocus />
           ) : (
-            <SpeechCheck key={speechKey} target={target} language={inputLang} apiKey={apiKey} onResult={handleSpeechResult} threshold={0.8} />
+            <SpeechCheck key={speechKey} target={target} language={inputLang} onResult={handleSpeechResult} threshold={0.8} />
           )}
           {completed && (
             <View style={styles.typingSuccessBox}>
