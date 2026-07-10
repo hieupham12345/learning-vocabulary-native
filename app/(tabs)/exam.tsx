@@ -48,7 +48,10 @@ function modelConfig() {
 const learner = new VocabularyLearner();
 
 function buildKeywordPrompt(inputLang: string, topic: string): string {
-  return `Generate a single short, specific keyword or phrase (2-5 words) in English that could serve as a unique angle or focus for a ${inputLang} reading passage on the topic "${topic}". Be creative and specific — avoid generic words. Return only the keyword, nothing else.`;
+  return `You are brainstorming an angle for a ${inputLang} exam-style reading passage on the topic "${topic}".
+Give ONE short, specific keyword or phrase (2-5 words, in English) that narrows the topic to a concrete scene, situation, or debate — e.g. for "Food & Culture": "night market etiquette", NOT a generic word like "delicious food".
+Rules: be creative and specific; do not just repeat the topic name.
+Output ONLY the keyword itself on a single line — no quotes, no trailing punctuation, no explanation, no preamble.`;
 }
 
 // ─────────────────────────────────────────────
@@ -231,25 +234,30 @@ function buildReadingPrompt(
   const keywordLine = keyword.trim()
     ? `- Specific angle / keyword: "${keyword.trim()}" — weave this naturally into the passage`
     : "";
-  return `You are an expert ${inputLang} language examiner creating a reading comprehension passage for a standardized exam.
+  return `You are an expert ${inputLang} language examiner writing a reading comprehension passage for an official proficiency exam (HSK / JLPT / TOPIK / CEFR-based exams such as IELTS·TOEIC), calibrated to ${level}.
 
 TASK: Generate a complete reading comprehension exercise.
 
 SETTINGS:
-- Passage language: ${inputLang}
-- Explanation / question language: ${outputLang}
+- Passage, title, questions and options language: ${inputLang}
+- Explanations and vocabulary meanings language: ${outputLang}
 - Proficiency level: ${level}
-- Passage length: ${wordRange}
+- Passage length: ${wordRange} (count words for space-separated languages, characters for Chinese/Japanese)
 - Topic: ${topic}
 ${keywordLine}
+
+LEVEL CALIBRATION:
+- Grammar and vocabulary of the passage MUST stay at or below ${level}, except 5–8 slightly harder key words — and every one of those MUST appear in vocabulary_notes.
+- Register, sentence complexity, and discourse style MUST match real ${level} exam reading passages — informative and natural, not childish.
 
 STRICT RULES:
 1. The passage body MUST be written entirely in ${inputLang}.
 2. The title MUST be in ${inputLang}.
 3. All comprehension questions and options MUST be written in ${inputLang}.
-4. "explanation" for each question MUST be in ${outputLang}.
-5. vocabulary_notes: "word" and "reading" (romanization if applicable) in ${inputLang}; "meaning" in ${outputLang}.
-6. Output valid JSON only — no markdown, no code blocks.
+4. "explanation" for each question MUST be in ${outputLang} and cite the part of the passage that justifies the answer.
+5. vocabulary_notes: "word" in ${inputLang}; "reading" = Pinyin with tone marks (Chinese) / romaji (Japanese) / Revised Romanization (Korean) / JSON null for Latin-script languages; "meaning" in ${outputLang}.
+6. EXACTLY ONE option per question is correct; distractors must be plausible but clearly refutable from the passage alone. Distribute correct letters across A–D.
+7. Output valid JSON only — no markdown, no code blocks. Inside JSON strings, line breaks MUST be written as \\n and inner double quotes as \\".
 
 OUTPUT JSON:
 {
@@ -271,7 +279,7 @@ OUTPUT JSON:
   ]
 }
 
-Generate exactly 4 comprehension questions covering: main idea, detail, vocabulary-in-context, and inference.
+Generate exactly 4 comprehension questions, in this order: main idea, detail, vocabulary-in-context, inference. Every question MUST be answerable from the passage alone — no outside knowledge.
 Vocabulary notes: include 5–8 key words from the passage.`;
 }
 

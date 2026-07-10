@@ -81,37 +81,45 @@ export class VocabularyLearner {
     const superHardCount = s.super_hard_examples;
     const total          = easyCount + mediumCount + hardCount + superHardCount;
 
-    return `You are a professional language tutor. Output MUST be valid JSON only — no markdown, no code blocks, no extra text.
+    return `You are a professional ${inputLanguage} tutor preparing a learner for official proficiency exams. Output MUST be valid JSON only — no markdown, no code blocks, no extra text.
 
 TASK: Generate a comprehensive learning output for: "${word}"
 
 LANGUAGE SETTINGS:
-- Input_language: "${inputLanguage}" (language of the word)
+- Input_language: "${inputLanguage}" (language of the word and ALL example sentences)
 - Output_language: "${outputLanguage}" (language for ALL explanations, meanings, translations)
 
 STRICT RULES:
-- ALL explanatory text MUST be in Output_language only. No mixing.
-- Romanization: provide string if Input_language is non-Latin; null otherwise.
-- No repeated grammatical structures across examples.
+- ALL explanatory text (meaning, usage, notes, translation, explanation, difficulty_justification) MUST be in Output_language only. No mixing.
+- Every example "sentence" MUST contain "${word}" (or a natural inflected/conjugated form of it).
+- Romanization: Chinese → Hanyu Pinyin with tone marks; Japanese → romaji; Korean → Revised Romanization; Latin-script languages → null (JSON null, not the string "null").
+- No repeated grammatical structures across examples — vary tense, clause type, and register.
+- ACCURACY: never invent meanings. If "${word}" is misspelled or not a standard word, describe the closest standard form and say so in "notes".
+- Valid JSON: escape line breaks inside strings as \\n and inner double quotes as \\". No trailing commas.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLE DISTRIBUTION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Generate EXACTLY ${total} examples distributed as follows:
+First determine the word's own proficiency level on the scale below, then generate EXACTLY ${total} examples distributed as follows:
 - "easy"       : exactly ${easyCount}
 - "medium"     : exactly ${mediumCount}
 - "hard"       : exactly ${hardCount}
 - "super_hard" : exactly ${superHardCount}
 
 LEVEL GUIDANCE per bucket:
-- easy       → at or below the word's own proficiency level
-- medium     → 1–2 levels above the word's own level
-- hard       → 3 levels above or near-native register
-- super_hard → NO cap — native / literary / academic level
+- easy       → at or below the word's own proficiency level; short everyday sentence
+- medium     → 1–2 levels above the word's own level; realistic daily / workplace context
+- hard       → 3 levels above or near-native register — the kind of sentence found in exam reading sections (HSK 5–6 / JLPT N2–N1 / TOPIK II / IELTS–TOEIC reading)
+- super_hard → NO cap — native / literary / academic / news register
 
 Use the appropriate scale for ${inputLanguage}:
 - Chinese → HSK 1–6+  |  Japanese → JLPT N5–N1
 - Korean → TOPIK 1–6  |  English/Other → CEFR A1–C2
+
+EXAMPLE QUALITY:
+- Adult, real-world contexts (work, news, travel, opinions, study) — never childish or textbook-artificial sentences.
+- Build sentences around natural, high-frequency collocations of the word.
+- The "level" field of each example MUST be a concrete scale value (e.g. "HSK 4", "JLPT N2", "CEFR B2").
 
 OUTPUT JSON:
 {
@@ -121,10 +129,10 @@ OUTPUT JSON:
         "meaning": "...",
         "romanization": "<string|null>",
         "part_of_speech": "...",
-        "register": "...",
+        "register": "<formal/neutral/informal + typical contexts>",
         "usage": "...",
         "notes": "...",
-        "collocations": ["<5 items in ${inputLanguage}>"]
+        "collocations": ["<5 high-frequency collocations in ${inputLanguage}, each containing the word>"]
     },
     "examples": {
         "easy":       [ <${easyCount} items> ],
@@ -135,7 +143,7 @@ OUTPUT JSON:
 }
 
 Each example item:
-{ "sentence": "...", "level": "...", "romanization": "...", "translation": "...", "explanation": "...", "grammar_points": ["..."], "difficulty_justification": "..." }`;
+{ "sentence": "...", "level": "...", "romanization": "<string|null>", "translation": "...", "explanation": "...", "grammar_points": ["..."], "difficulty_justification": "..." }`;
   }
 
   public async learnWord(
@@ -208,13 +216,24 @@ DIFFICULTY DISTRIBUTION for this batch of ${batchSize}:
 Distribute as evenly as possible; exact counts may vary by ±1 to hit the total.
 
 QUESTION DIMENSIONS (vary — never repeat same dimension consecutively):
-DIRECT_USAGE | SYNONYM_ANTONYM | COLLOCATION | CONTEXTUAL_MEANING | GRAMMAR_ROLE | ERROR_DETECTION | REGISTER_MATCH | NUANCE
+- DIRECT_USAGE: pick the sentence/blank where the word is used correctly
+- SYNONYM_ANTONYM: closest synonym or antonym in context
+- COLLOCATION: which word naturally combines with the tested word
+- CONTEXTUAL_MEANING: meaning of the word in a given sentence
+- GRAMMAR_ROLE: correct grammatical form/position of the word
+- ERROR_DETECTION: identify the sentence that uses the word incorrectly
+- REGISTER_MATCH: appropriate formality/context for the word
+- NUANCE: distinguish the word from a near-synonym
 
 QUALITY RULES:
+- Each question MUST genuinely test its "word_tested": the word appears in the question stem or is the answer.
+- EXACTLY ONE option is correct. A competent native speaker must be able to reject the other three — never two defensible answers.
+- Distractors: same part of speech and similar length/register as the correct option; plausible but clearly wrong. No "all/none of the above".
+- Mimic official exam item style for ${inputLanguage} (HSK / JLPT / TOPIK / CEFR-based exams such as IELTS·TOEIC) — natural phrasing, not textbook-artificial.
 - Spread questions evenly across all words.
-- All 4 options must be plausible distractors written in ${inputLanguage}.
 - Distribute correct answer positions (A/B/C/D) evenly across the batch.
-- Exam-quality phrasing — natural, not textbook-artificial.
+- "level" MUST be a concrete value on the ${proficiencyScale}.
+- Valid JSON: escape line breaks inside strings as \\n and inner double quotes as \\".
 ${avoidBlock}
 OUTPUT: valid JSON only — no markdown, no extra text, start with { end with }.
 
@@ -254,12 +273,13 @@ ${JSON.stringify(questions.map((q, i) => ({
 
 For EACH question, write an explanation that includes:
 1. 📋 Question translation — translate the question and all options into ${outputLanguage}.
-2. ✅ Correct answer — explain WHY the correct option is right (meaning, grammar, usage context).
-3. ❌ Wrong answers — briefly explain why each incorrect option does NOT fit.
-4. 💡 Key insight — one concise takeaway about the word tested.
-5. 📊 Level note — mention the proficiency level and what it implies.
+2. ✅ Correct answer — explain WHY the correct option is right (meaning, grammar, usage context), 1–3 sentences.
+3. ❌ Wrong answers — one short sentence per incorrect option explaining why it does NOT fit.
+4. 💡 Key insight — one concise, memorable takeaway about the word tested (collocation, nuance, or common mistake).
+5. 📊 Level note — the proficiency level this question targets (e.g. HSK 4, JLPT N2, CEFR B2) and the skill it tests.
 
-OUTPUT: valid JSON only — array of exactly ${questions.length} objects, same order.
+OUTPUT: valid JSON only — no markdown, no code blocks. An array of exactly ${questions.length} objects, same order, "n" matching the input numbering.
+Inside "explanation" strings: line breaks MUST be written as \\n and inner double quotes as \\".
 [
   {
     "n": 1,
@@ -347,11 +367,11 @@ OUTPUT: valid JSON only — array of exactly ${questions.length} objects, same o
 You are an expert linguist. Split the following ${language} sentence into an array of meaningful tokens.
 Sentence: "${sentence}"
 CRITICAL RULES:
-1. Return ONLY a valid JSON array of strings. No markdown, no code blocks.
-2. Every character must appear in exactly one token (perfect reconstruction).
-3. Chinese/Japanese: split by word/morpheme, NOT single character.
-4. Space-separated languages: split on whitespace; punctuation attached to preceding word OR standalone.
-Example Chinese: ["我", "喜欢", "学习", "中文"]
+1. Return ONLY a valid JSON array of strings. No markdown, no code blocks, no explanation.
+2. Concatenating all tokens in order MUST reproduce the sentence EXACTLY — do not add, remove, translate, or normalize any character.
+3. Chinese/Japanese: split by word/morpheme, NOT single character. Japanese particles (は/が/を/に…) are separate tokens. CJK punctuation (。、！？「」…) is a standalone token.
+4. Space-separated languages: split on whitespace, keeping whitespace as its own token; punctuation attached to preceding word OR standalone.
+Example Chinese: ["我", "喜欢", "学习", "中文", "。"]
 Example English: ["I", " ", "love", " ", "learning."]
     `;
     try {
@@ -375,12 +395,12 @@ Example English: ["I", " ", "love", " ", "learning."]
     const prompt = `
 You are an expert linguist. Split EACH ${language} sentence below into an array of meaningful tokens.
 INPUT: a JSON array of ${sentences.length} sentences.
-OUTPUT: ONLY a valid JSON array of ${sentences.length} arrays — element i is the token array for sentence i, SAME order and length. No markdown, no code blocks, no extra text.
+OUTPUT: ONLY a valid JSON array of EXACTLY ${sentences.length} arrays — element i is the token array for sentence i, SAME order. Never merge, split, skip, or reorder sentences. No markdown, no code blocks, no extra text.
 RULES:
-1. Every character of a sentence must appear in exactly one of its tokens (perfect reconstruction).
-2. Chinese/Japanese: split by word/morpheme, NOT single character.
-3. Space-separated languages: split on whitespace; punctuation attached to preceding word OR standalone.
-Example (2 sentences): [["我","喜欢","学习","中文"],["I"," ","love"," ","learning."]]
+1. Concatenating the tokens of element i in order MUST reproduce sentence i EXACTLY — do not add, remove, translate, or normalize any character.
+2. Chinese/Japanese: split by word/morpheme, NOT single character. Japanese particles (は/が/を/に…) are separate tokens. CJK punctuation (。、！？「」…) is a standalone token.
+3. Space-separated languages: split on whitespace, keeping whitespace as its own token; punctuation attached to preceding word OR standalone.
+Example (2 sentences): [["我","喜欢","学习","中文","。"],["I"," ","love"," ","learning."]]
 SENTENCES: ${JSON.stringify(sentences)}
     `;
 
@@ -425,10 +445,14 @@ SENTENCES: ${JSON.stringify(sentences)}
 You are an expert lexicographer translating ${inputLanguage} to ${outputLanguage}.
 TASK: Translate "${text}".
 RULES:
-- Concise and precise. Group by part of speech if multiple.
-- If ${inputLanguage} is Chinese: MUST include Pinyin.
+- Concise and precise, like a dictionary entry. Group by part of speech if multiple; at most 3 meanings per part of speech, most common first.
+- Every meaning MUST be in ${outputLanguage}.
+- If "${text}" is a multi-word phrase, translate the whole phrase as used naturally, not word by word.
+- If ${inputLanguage} is Chinese: MUST include Pinyin with tone marks.
 - If ${inputLanguage} is Japanese: MUST include Romaji.
-OUTPUT FORMAT (plain text only, no markdown):
+- If ${inputLanguage} is Korean: MUST include Revised Romanization.
+- No preamble, no commentary, no markdown — start directly with the entry.
+OUTPUT FORMAT (plain text only):
 <source word> (<romanization if applicable>):
 [Noun / Verb...]
 - <meaning 1>
@@ -461,13 +485,13 @@ OUTPUT FORMAT (plain text only, no markdown):
     const wrongOptions  = options.filter(o => !o.startsWith(correctAnswer));
 
     const prompt = `You are a ${inputLanguage} language tutor. Explain the quiz question below to your student.
-Write EVERYTHING in ${outputLanguage}. Be concise — enough to understand, no more. No markdown, no bullet symbols, plain text only.
+Write EVERYTHING in ${outputLanguage} (you may quote ${inputLanguage} words when needed). Be concise — enough to understand, no more. No markdown, no bullet symbols, plain text only.
 
 Question: ${question}
 Options: ${options.join(" / ")}
 Correct answer: ${correctOption}
 
-Structure your response in this exact format (use these labels as plain text headers):
+Structure your response in EXACTLY this format — each label starts a new line, keep the labels verbatim, replace the bracketed text with your content, and do NOT output the square brackets:
 
 Translation: [Translate the question and all options into ${outputLanguage}.]
 
@@ -475,7 +499,7 @@ Correct answer: [In 1–2 sentences, explain why ${correctOption} is right — m
 
 Wrong answers: [For each wrong option, one short sentence explaining why it does not fit: ${wrongOptions.join(", ")}.]
 
-Key point: [One sentence on the most important thing to remember about "${wordTested}".]
+Key point: [One sentence on the most important thing to remember about "${wordTested}" — collocation, nuance, or common mistake.]
 
 Level: [State the proficiency level (e.g. HSK 4, JLPT N2, CEFR B2) and what skill this question tests.]`;
 
